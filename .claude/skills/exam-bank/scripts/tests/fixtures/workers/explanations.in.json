@@ -1,0 +1,12 @@
+{
+  "batch_id": "explanations-0001",
+  "step": "explanations",
+  "questions": [{
+    "id": "q_3fa9c21b07de",
+    "question": "Which Google Cloud service runs a managed Apache Beam pipeline?",
+    "choices": [{"letter": "A", "text": "Dataflow"}, {"letter": "B", "text": "Cloud Storage"}],
+    "answer": ["A"],
+    "explanations": {"B": {"text": "Incorrect. Cloud Storage stores objects.", "by": "user"}},
+    "explanation_blocks": []
+  }]
+}

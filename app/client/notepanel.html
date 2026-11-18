@@ -1,0 +1,90 @@
+<script>
+// The Note side panel (spec 0002, Note). One component for Review mode, and
+// later the Mock Test and the results review. It slides in from the right over
+// a dimmed screen and sits on document.body, so a re-render of #app leaves it.
+//
+//   openNotePanel({ text: 'current note', save: function (text, done) {...} })
+//
+// `save` runs on every close (Done, Enter, x, Esc, a click outside). It calls
+// done(null) on success, which removes the panel, or done('message') on a
+// failure, which keeps the panel open with the message. Needs el() from app.html.
+
+var NOTE_PANEL_MAX = 1000;
+var notePanelOpen = false;
+// While the panel is open: flushNotePanel(done) saves and closes it, then calls
+// done(null), or done('message') when the save failed and the panel stays open.
+// The Mock Test calls it before Pause. Null when no panel is open.
+var flushNotePanel = null;
+
+function openNotePanel(opts) {
+  if (notePanelOpen) return;
+  notePanelOpen = true;
+
+  var overlay = el('div', { 'class': 'noteov' });
+  var side = el('div', { 'class': 'notepanel', role: 'dialog', 'aria-label': 'Note' });
+  var area = el('textarea', { placeholder: 'Mnemonics, traps to avoid…', maxlength: String(NOTE_PANEL_MAX), 'aria-label': 'Note' });
+  area.value = String(opts.text || '').slice(0, NOTE_PANEL_MAX);
+  var counter = el('span', { 'class': 'muted small' });
+  var error = el('p', { 'class': 'err' });
+  var saving = false;
+  var waiting = [];
+
+  function count() { counter.textContent = area.value.length + '/1,000 characters'; }
+  count();
+  area.addEventListener('input', count);
+
+  function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+  }
+
+  // `after`, when given, hears the outcome. A close already in flight takes it too.
+  function close(after) {
+    var hear = typeof after === 'function' ? after : null;
+    if (hear) waiting.push(hear);
+    if (saving) return;
+    saving = true;
+    error.textContent = '';
+    opts.save(area.value.slice(0, NOTE_PANEL_MAX), function (failure) {
+      saving = false;
+      var heard = waiting;
+      waiting = [];
+      if (failure) error.textContent = failure;
+      else remove();
+      heard.forEach(function (fn) { fn(failure || null); });
+    });
+  }
+
+  function remove() {
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+    notePanelOpen = false;
+    flushNotePanel = null;
+  }
+  flushNotePanel = function (done) { close(done); };
+
+  // Enter saves, Shift+Enter adds a line. Enter during IME composition is left alone.
+  area.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); close(); }
+  });
+  document.addEventListener('keydown', onKey);
+  overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) close(); });
+
+  var x = el('button', { type: 'button', 'class': 'x', 'aria-label': 'Close', text: '×' });
+  x.addEventListener('click', close);
+  var clear = el('button', { type: 'button', text: 'Clear note' });
+  clear.addEventListener('click', function () { area.value = ''; count(); area.focus(); });
+  var done = el('button', { type: 'button', 'class': 'save', text: 'Done' });
+  done.addEventListener('click', close);
+
+  side.appendChild(el('div', { 'class': 'notehead' }, [el('b', { text: 'Note' }), x]));
+  side.appendChild(area);
+  side.appendChild(el('p', { 'class': 'muted small', text: 'Enter to save · Shift+Enter for new line' }));
+  side.appendChild(el('div', { 'class': 'notefoot' }, [counter]));
+  side.appendChild(error);
+  side.appendChild(el('div', { 'class': 'row' }, [clear, done]));
+  overlay.appendChild(side);
+  document.body.appendChild(overlay);
+  area.focus();
+  area.setSelectionRange(area.value.length, area.value.length);
+}
+</script>

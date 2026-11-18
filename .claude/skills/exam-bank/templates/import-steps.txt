@@ -1,0 +1,6 @@
+Import into the sheet:
+1. Open the spreadsheet and select the Questions tab.
+2. File > Import > Upload, pick export/<slug>-questions.csv.
+3. Import location: "Replace current sheet". Never "Replace spreadsheet".
+4. Separator type: Comma.
+5. Untick "Convert text to numbers, dates, and formulas".

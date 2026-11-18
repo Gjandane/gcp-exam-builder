@@ -1,0 +1,673 @@
+<script>
+// One load call at start; the page renders by the returned `screen`.
+// Text goes in through textContent, never as HTML.
+
+var WIPE_TEXT = 'The app\'s tabs are gone. This happens when a bank is imported with "Replace spreadsheet".\n' +
+  'Nothing is lost yet. In the spreadsheet, open File > Version history > See version history\n' +
+  'and restore the version from before the import. Then import again with "Replace current sheet".';
+
+function el(tag, attrs, children) {
+  var node = document.createElement(tag);
+  Object.keys(attrs || {}).forEach(function (k) {
+    if (k === 'text') node.textContent = attrs[k];
+    else node.setAttribute(k, attrs[k]);
+  });
+  (children || []).forEach(function (c) { node.appendChild(c); });
+  return node;
+}
+
+function show(nodes) {
+  var app = document.getElementById('app');
+  app.textContent = '';
+  nodes.forEach(function (n) { app.appendChild(n); });
+}
+
+var screens = {
+  wipe: function (data) {
+    return [el('div', { 'class': 'card error' }, [
+      el('p', { 'class': 'lines', text: WIPE_TEXT }),
+      el('a', { href: data.spreadsheetUrl, target: '_blank', rel: 'noopener', text: 'Open spreadsheet' }),
+    ])];
+  },
+  refused: function (data) {
+    var nodes = [];
+    if (data.lead) nodes.push(el('p', { 'class': 'lead', text: data.lead }));
+    var list = el('ul', {}, data.messages.map(function (m) { return el('li', { text: m }); }));
+    if (data.more > 0) list.appendChild(el('li', { text: 'and ' + data.more + ' more' }));
+    nodes.push(list);
+    return [el('div', { 'class': 'card error' }, nodes), importCard(data)];
+  },
+  version: function (data) {
+    return [el('div', { 'class': 'card error' }, [el('p', { text: data.message })])];
+  },
+  settings: function (data) {
+    return settingsForm(data, null);
+  },
+  home: function (data) {
+    // The client keeps the bank in memory and reads no tab again until the next load.
+    bank = data.bank;
+    var importLink = el('a', { href: '#', text: 'Import bank' });
+    var historyLink = el('a', { href: '#', text: 'Mock Test history' });
+    historyLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      homeData = data;
+      openHistory();
+    });
+    var settingsLink = el('a', { href: '#', text: 'Settings' });
+    settingsLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      // Opened by hand: Cancel returns to the home data already in hand.
+      show(settingsForm({ mode: 'edit', values: data.settings, errors: {}, hints: data.hints }, function () { show(screens.home(data)); }));
+    });
+    var header = el('div', { 'class': 'card' }, [
+      el('h1', { text: data.header.examName }),
+      el('p', { 'class': 'muted', text: data.header.examDate + ' · ' + data.header.daysLeft }),
+      el('p', {}, [settingsLink, document.createTextNode(' · '), historyLink, document.createTextNode(' · '), importLink]),
+    ]);
+    var panel = importCard(data);
+    panel.hidden = true;
+    importLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      panel.hidden = !panel.hidden;
+    });
+    homeData = data;
+    var startReview = el('button', { type: 'button', 'class': 'primary', text: 'Start review' });
+    // Due when the server's due count is above 0, else All.
+    startReview.addEventListener('click', function () { openReview(data.counts.due > 0 ? 'due' : 'all'); });
+    var reviewCard = el('div', { 'class': 'card home-card' }, [
+      el('h2', { text: 'Review mode' }),
+      el('p', { 'class': 'muted', text: data.counts.due + ' due' }),
+      el('div', { 'class': 'row' }, [startReview]),
+    ]);
+    return data.warnings.map(banner).concat([header, panel, mockCard(data), reviewCard, bankLine(data.bankLine)]);
+  },
+};
+
+var bank = [];
+// The last home data. Review mode updates its `states` as answers come back.
+var homeData = null;
+
+var SETTINGS_LABELS = [
+  ['exam_name', 'Exam name', 'text'],
+  ['exam_date', 'Exam date (YYYY-MM-DD)', 'text'],
+  ['mock_question_count', 'Mock Test questions', 'text'],
+  ['mock_minutes', 'Mock Test minutes', 'text'],
+  ['section_weights', 'Section weights', 'text'],
+];
+
+// The Settings screen. `cancel` is a function, or null when there is no Cancel:
+// setup mode, and a bad value found on load.
+function settingsForm(data, cancel) {
+  var setup = data.mode === 'setup';
+  var inputs = {};
+  var fields = SETTINGS_LABELS.map(function (f) {
+    var key = f[0];
+    var input = el('input', { type: f[2], id: 'f_' + key, name: key });
+    input.value = data.values[key] === undefined ? '' : data.values[key];
+    inputs[key] = input;
+    var kids = [el('label', { 'for': 'f_' + key, text: f[1] }), input];
+    var hint = data.hints && data.hints[key];
+    if (hint) kids.push(el('p', { 'class': 'muted small', text: hint }));
+    if (data.errors[key]) {
+      input.setAttribute('aria-invalid', 'true');
+      kids.push(el('p', { 'class': 'err', text: data.errors[key] }));
+    }
+    return el('div', { 'class': data.errors[key] ? 'field bad' : 'field' }, kids);
+  });
+  var save = el('button', { type: 'submit', 'class': 'primary', text: 'Save' });
+  var note = el('p', { 'class': 'err' });
+  var buttons = [save];
+  if (cancel) {
+    var cancelButton = el('button', { type: 'button', text: 'Cancel' });
+    cancelButton.addEventListener('click', cancel);
+    buttons.push(cancelButton);
+  }
+  var form = el('form', {}, fields.concat([note, el('div', { 'class': 'row' }, buttons)]));
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var values = {};
+    Object.keys(inputs).forEach(function (k) { values[k] = inputs[k].value; });
+    save.disabled = true;
+    note.textContent = '';
+    google.script.run
+      .withSuccessHandler(function (result) {
+        if (result && result.fieldErrors) {
+          show(settingsForm({ mode: data.mode, values: values, errors: result.fieldErrors, hints: data.hints }, cancel));
+        } else render(result);
+      })
+      .withFailureHandler(function (err) {
+        save.disabled = false;
+        note.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
+      })
+      .saveSettings(values);
+  });
+  return [el('div', { 'class': 'card' }, [el('h1', { text: setup ? 'Set up' : 'Settings' }), form])];
+}
+
+// The import steps, the spreadsheet link and the reload line. Shown on the
+// refusal screen and in the home panel.
+function importCard(data) {
+  return el('div', { 'class': 'card' }, [
+    el('p', { 'class': 'lines', text: data.importSteps }),
+    el('p', {}, [el('a', { href: data.spreadsheetUrl, target: '_blank', rel: 'noopener', text: 'Open spreadsheet' })]),
+    el('p', { 'class': 'muted', text: 'Then reload this page.' }),
+  ]);
+}
+
+// A dismissible amber banner. A dismissed banner returns on the next page load.
+function banner(warning) {
+  var node = el('div', { 'class': 'banner' }, [el('span', { text: warning.text })]);
+  var close = el('button', { type: 'button', 'class': 'dismiss', 'aria-label': 'Dismiss', text: '×' });
+  close.addEventListener('click', function () { node.remove(); });
+  node.appendChild(close);
+  return node;
+}
+
+function bankLine(line) {
+  var text = 'Bank: ' + line.active + ' active · ' + line.retired + ' retired · ' + line.orphaned + ' orphaned';
+  if (line.updated) text += ' · updated ' + line.updated;
+  return el('p', { 'class': 'muted small', text: text });
+}
+
+// ---- Review mode
+
+var FILTERS = [['all', 'All'], ['due', 'Due'], ['wrong', 'Wrong'], ['bookmarked', 'Bookmarked']];
+var LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
+
+// One Review mode list, frozen when the filter is picked.
+var review = null;
+// The unfinished Mock Test on screen, see client/testscreen. Null outside it.
+var testRun = null;
+// The results screen on show, see client/results. Null outside it.
+var resultsRun = null;
+
+function errorText(err) {
+  return err && err.message ? err.message : String(err);
+}
+
+// Plain text with `backtick` spans in monospace, built from text nodes so
+// nothing in the text is read as HTML. An unmatched backtick stays as written.
+function richText(text) {
+  var frag = document.createDocumentFragment();
+  var parts = String(text === undefined || text === null ? '' : text).split('`');
+  var closed = parts.length % 2 === 1;
+  parts.forEach(function (part, i) {
+    var inCode = i % 2 === 1;
+    if (inCode && (closed || i < parts.length - 1)) frag.appendChild(el('code', { text: part }));
+    else frag.appendChild(document.createTextNode(inCode ? '`' + part : part));
+  });
+  return frag;
+}
+
+function questionById(id) {
+  for (var i = 0; i < bank.length; i++) if (bank[i].id === id) return bank[i];
+  return null;
+}
+
+function lettersOf(text) {
+  return String(text || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean).sort();
+}
+
+// Filled choices in stored order: [{letter, text, explanation}].
+function choicesOf(q) {
+  return LETTERS.filter(function (l) { return String(q['choice_' + l.toLowerCase()]).trim() !== ''; })
+    .map(function (l) { return { letter: l, text: q['choice_' + l.toLowerCase()], explanation: q['explanation_' + l.toLowerCase()] }; });
+}
+
+function goHome() {
+  review = null;
+  resultsRun = null;
+  show(screens.home(homeData));
+}
+
+// Picks a filter: the server builds the list.
+function openReview(filter) {
+  show([el('div', { 'class': 'review' }, [el('div', { 'class': 'card' }, [el('p', { 'class': 'muted', text: 'Loading…' })])])]);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.error) return showMessage(res.message);
+      if (homeData && res.counts) homeData.counts = res.counts;
+      review = { filter: filter, ids: res.ids, pos: 0, answered: 0, correct: 0, done: false };
+      resetQuestion();
+      renderReview();
+    })
+    .withFailureHandler(function (err) { showMessage('Could not open the list: ' + errorText(err)); })
+    .getReviewList(filter);
+}
+
+function resetQuestion() {
+  review.picks = [];
+  review.graded = null; // {result, correct: [letters]}
+  review.open = {};
+  review.pending = false;
+  review.error = '';
+  review.panel = null; // the one open inline panel
+}
+
+function filterBar() {
+  return el('div', { 'class': 'filters' }, FILTERS.map(function (f) {
+    var on = review && review.filter === f[0];
+    // Counts come from the server with load, getReviewList and answerReview.
+    var count = homeData && homeData.counts ? homeData.counts[f[0]] : 0;
+    var b = el('button', { type: 'button', 'class': on ? 'on' : '', text: f[1] + ' ' + count });
+    // Picking a filter builds a new list, the current one included.
+    b.addEventListener('click', function () { openReview(f[0]); });
+    return b;
+  }));
+}
+
+function renderReview() {
+  var home = el('a', { href: '#', text: 'Home' });
+  home.addEventListener('click', function (e) { e.preventDefault(); goHome(); });
+  var body;
+  if (!review.ids.length) body = el('div', { 'class': 'card muted', text: 'No questions match this filter.' });
+  else if (review.done) body = endCard();
+  else body = questionCard();
+  show([el('div', { 'class': 'review' }, [el('p', { 'class': 'top' }, [home]), filterBar(), body])]);
+}
+
+function endCard() {
+  var pick = el('button', { type: 'button', text: 'Pick a filter' });
+  pick.addEventListener('click', function () {
+    var first = document.querySelector('.filters button');
+    if (first) first.focus();
+  });
+  var home = el('button', { type: 'button', text: 'Home' });
+  home.addEventListener('click', goHome);
+  return el('div', { 'class': 'card' }, [
+    el('p', { text: 'End of this list. ' + review.answered + ' answered, ' + review.correct + ' correct.' }),
+    el('div', { 'class': 'row' }, [pick, home]),
+  ]);
+}
+
+function srPill(id) {
+  var s = homeData && homeData.states ? homeData.states[id] : null;
+  var text = s && s.effective_box > 0 ? 'Box ' + s.effective_box + ' · due ' + s.effective_due_at : 'Unseen';
+  return el('span', { 'class': 'pill', text: text });
+}
+
+// Pieces of the Question card that Review mode and the Mock Test share.
+function subdomainPill(q) {
+  return el('span', { 'class': 'pill', text: 'Subdomain ' + q.subdomain + ': ' + q.subdomain_title });
+}
+
+// One choice: its input, "L) text" and an optional mark. `cls` carries the state.
+function choiceLabel(input, letter, text, cls, mark) {
+  var kids = [input, el('span', { 'class': 'txt' }, [document.createTextNode(letter + ') '), richText(text)])];
+  if (mark) kids.push(el('span', { 'class': 'mark', text: mark }));
+  return el('label', { 'class': cls }, kids);
+}
+
+function actionsGrid(buttons) {
+  return el('div', { 'class': 'actions' }, buttons);
+}
+
+function questionCard() {
+  var id = review.ids[review.pos];
+  var q = questionById(id);
+  if (!q) return el('div', { 'class': 'card error', text: 'Question ' + id + ' is not in the bank.' });
+  var n = lettersOf(q.answer).length;
+  var multi = n > 1;
+  var graded = review.graded;
+  var nodes = [el('div', { 'class': 'qnum', text: 'Question ' + (review.pos + 1) + ' of ' + review.ids.length })];
+
+  var pills = [subdomainPill(q)];
+  if (String(q.uncertain).toUpperCase() === 'TRUE') {
+    pills.push(el('span', {
+      'class': 'pill warn',
+      title: 'This answer is disputed or was given with low confidence. Check it before you trust it.',
+      text: '⚠ Uncertain answer',
+    }));
+  }
+  pills.push(srPill(id));
+  nodes.push(el('div', {}, pills));
+  nodes.push(el('div', { 'class': 'stem' }, [richText(q.question)]));
+  nodes.push(el('div', { 'class': 'selhint', text: 'Select ' + n + '.' }));
+
+  choicesOf(q).forEach(function (c) {
+    var picked = review.picks.indexOf(c.letter) >= 0;
+    var isCorrect = graded && graded.correct.indexOf(c.letter) >= 0;
+    var cls = 'choice';
+    var mark = '';
+    if (!graded) {
+      if (picked) cls += ' pick';
+    } else {
+      cls += ' locked';
+      if (isCorrect) { cls += ' correct'; mark = picked ? '✓ your pick' : '✓ correct'; }
+      else if (picked) { cls += ' wrongpick'; mark = '✕ your pick'; }
+    }
+    var input = el('input', { type: multi ? 'checkbox' : 'radio', name: 'pick', value: c.letter });
+    input.checked = picked;
+    input.disabled = !!graded;
+    input.addEventListener('change', function () { pickChoice(c.letter, multi); });
+    nodes.push(choiceLabel(input, c.letter, c.text, cls, mark));
+
+    if (graded) {
+      var open = !!review.open[c.letter];
+      var head = el('button', { type: 'button', 'class': 'exhead', 'aria-expanded': String(open) }, [
+        el('span', { text: (isCorrect ? '✓' : '✕') + ' Explanation' }),
+        el('span', { text: open ? '▴' : '▾' }),
+      ]);
+      head.addEventListener('click', function () {
+        review.open[c.letter] = !review.open[c.letter];
+        renderReview();
+      });
+      nodes.push(head);
+      if (open) nodes.push(el('div', { 'class': 'exbody' }, [richText(c.explanation)]));
+    }
+  });
+
+  if (graded) {
+    var ok = graded.result === 'correct';
+    var detail = 'Correct answer: ' + graded.correct.join(', ') + '.';
+    if (!ok) detail += ' You picked ' + review.picks.join(', ') + '.';
+    nodes.push(el('div', { 'class': 'result ' + (ok ? 'ok' : 'bad') }, [
+      el('b', { text: ok ? '✓ Correct!' : '✕ Incorrect' }),
+      document.createTextNode(detail),
+    ]));
+  }
+
+  nodes.push(actionsGrid(['bookmark', 'note', null, '⧉ Copy prompt'].map(function (t) {
+    if (t === null) return reportButton(id);
+    if (t === 'bookmark') return bookmarkButton(id);
+    if (t === 'note') return noteButton(id);
+    var b = el('button', { type: 'button', text: t });
+    if (!graded) b.disabled = true;
+    else b.addEventListener('click', function () { review.panel = (review.panel && review.panel.kind === 'copy') ? null : { kind: 'copy' }; renderReview(); });
+    return b;
+  })));
+  // Inline panels open one at a time: review.panel holds the one open.
+  if (review.panel && review.panel.kind === 'report') nodes.push(reportPanel(id));
+  if (graded && review.panel && review.panel.kind === 'copy') nodes.push(copyPanel(q, { picked: review.picks, result: graded.result }, renderReview));
+
+  if (review.error) nodes.push(el('p', { 'class': 'err', text: review.error }));
+  nodes.push(primaryButton(id, n));
+  return el('div', { 'class': 'card' }, nodes);
+}
+
+// The screen that owns the card now: the Mock Test run, else Review mode. The
+// Bookmark, Note and Report code below serves both through these two.
+function cardView() {
+  return testRun || resultsRun || review || {};
+}
+
+function rerender() {
+  if (testRun) renderTest();
+  else if (resultsRun) renderResults();
+  else if (review) renderReview();
+}
+
+// ---- Bookmark and Note
+
+function stateOfId(id) {
+  return homeData && homeData.states ? homeData.states[id] : null;
+}
+
+// Filled when the question is bookmarked. A click saves at once.
+function bookmarkButton(id) {
+  var s = stateOfId(id);
+  var on = !!s && String(s.bookmarked).toUpperCase() === 'TRUE';
+  var b = el('button', { type: 'button', 'class': on ? 'filled' : '', 'aria-pressed': String(on), text: '🔖 Bookmark' });
+  b.addEventListener('click', function () {
+    b.disabled = true;
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (res && res.error) { cardView().error = res.message; return rerender(); }
+        if (homeData) { homeData.states[id] = res.state; homeData.counts = res.counts; }
+        cardView().error = '';
+        rerender();
+      })
+      .withFailureHandler(function (err) { cardView().error = 'Could not save the Bookmark: ' + errorText(err); rerender(); })
+      .setBookmark(id, !on);
+  });
+  return b;
+}
+
+// Filled when the question has a non-empty note. Opens the Note side panel.
+function noteButton(id) {
+  var s = stateOfId(id);
+  var has = !!s && s.note !== '';
+  var b = el('button', { type: 'button', 'class': has ? 'filled' : '', text: '📝 Note' });
+  b.addEventListener('click', function () {
+    var cur = stateOfId(id);
+    openNotePanel({
+      text: cur ? cur.note : '',
+      save: function (text, done) {
+        google.script.run
+          .withSuccessHandler(function (res) {
+            if (res && res.error) return done(res.message);
+            if (homeData) homeData.states[id] = res.state;
+            done(null);
+            rerender();
+          })
+          .withFailureHandler(function (err) { done('Could not save the note: ' + errorText(err)); })
+          .saveNote(id, text);
+      },
+    });
+  });
+  return b;
+}
+
+// ---- Report
+
+var REPORT_NOTE_MAX = 1000;
+
+// Filled when the question has an open Report.
+function reportButton(id) {
+  var open = !!(homeData && homeData.openReports && homeData.openReports.indexOf(id) >= 0);
+  var b = el('button', { type: 'button', 'class': open ? 'filled' : '', text: '⚠ Report' });
+  b.addEventListener('click', function () { toggleReportPanel(id); });
+  return b;
+}
+
+// Opening the Report panel replaces any other open panel; a second click closes it.
+function toggleReportPanel(id) {
+  if (cardView().panel && cardView().panel.kind === 'report') cardView().panel = null;
+  else openReportPanel(id);
+  rerender();
+}
+
+// Loads the open note and the last re-check result, then fills the panel.
+function openReportPanel(id) {
+  var panel = { kind: 'report', loading: true, draft: '', last: null, error: '', pending: false };
+  cardView().panel = panel;
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (cardView().panel !== panel) return;
+      panel.loading = false;
+      panel.draft = res && res.open ? res.open.note : '';
+      panel.last = res ? res.resolved : null;
+      rerender();
+    })
+    .withFailureHandler(function (err) {
+      if (cardView().panel !== panel) return;
+      panel.loading = false;
+      panel.error = 'Could not load the Report: ' + errorText(err);
+      rerender();
+    })
+    .getReports(id);
+}
+
+function reportPanel(id) {
+  var panel = cardView().panel;
+  var area = el('textarea', { placeholder: 'What looks wrong?', maxlength: String(REPORT_NOTE_MAX), 'aria-label': 'Report note' });
+  area.value = panel.draft;
+  area.disabled = panel.loading || panel.pending;
+  area.addEventListener('input', function () { panel.draft = area.value; });
+  var kids = [area];
+  if (panel.last) {
+    kids.push(el('p', { 'class': 'muted small', text: 'Last re-check, ' + panel.last.resolved_at.slice(0, 10) + ': ' + panel.last.resolution }));
+  }
+  if (panel.error) kids.push(el('p', { 'class': 'err', text: panel.error }));
+  var save = el('button', { type: 'button', 'class': 'save', text: panel.pending ? 'Saving…' : 'Save report' });
+  save.disabled = panel.loading || panel.pending;
+  save.addEventListener('click', function () { saveReportNote(id); });
+  var cancel = el('button', { type: 'button', text: 'Cancel' });
+  cancel.addEventListener('click', function () { cardView().panel = null; rerender(); });
+  kids.push(el('div', { 'class': 'row' }, [save, cancel]));
+  return el('div', { 'class': 'panel' }, kids);
+}
+
+function saveReportNote(id) {
+  var panel = cardView().panel;
+  var note = panel.draft.trim();
+  if (note === '') { panel.error = 'Say what looks wrong.'; return rerender(); }
+  if (note.length > REPORT_NOTE_MAX) { panel.error = 'The note is at most 1,000 characters.'; return rerender(); }
+  panel.pending = true;
+  panel.error = '';
+  rerender();
+  google.script.run
+    .withSuccessHandler(function (res) {
+      panel.pending = false;
+      if (res && res.error) { panel.error = res.message; return rerender(); }
+      if (homeData && homeData.openReports && homeData.openReports.indexOf(id) < 0) homeData.openReports.push(id);
+      if (cardView().panel === panel) cardView().panel = null;
+      rerender();
+    })
+    .withFailureHandler(function (err) {
+      panel.pending = false;
+      panel.error = 'Could not save: ' + errorText(err);
+      rerender();
+    })
+    .saveReport(id, note);
+}
+
+// ---- Copy prompt
+
+var COPY_LEVELS = ['Beginner', 'Intermediate', 'Expert'];
+// Kept for the page session, across questions.
+var copyLevel = 'Intermediate';
+
+// Copies `text` by the three-step chain. Every step starts inside the click
+// handler. `done(true)` on a copy, `done(false)` when the user must copy by hand.
+function copyText(text, done) {
+  function viaTextarea() {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    done(ok);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    var p;
+    try { p = navigator.clipboard.writeText(text); } catch (e) { return viaTextarea(); }
+    p.then(function () { done(true); }, viaTextarea);
+  } else viaTextarea();
+}
+
+// `user` is {picked, result}; `redraw` repaints the screen that owns the panel.
+function copyPanel(q, user, redraw) {
+  var examName = homeData.header.examName;
+  var preview = el('pre', { 'class': 'preview' });
+  var status = el('p', { 'class': 'muted small', role: 'status' });
+  var manual = el('div', {});
+  var levelRow = el('div', { 'class': 'filters' }, COPY_LEVELS.map(function (l) {
+    var b = el('button', { type: 'button', 'class': l === copyLevel ? 'on' : '', text: l });
+    b.addEventListener('click', function () {
+      copyLevel = l;
+      redraw();
+    });
+    return b;
+  }));
+  var text = buildPrompt(q, copyLevel, examName, user);
+  preview.textContent = text;
+  var copy = el('button', { type: 'button', text: 'Copy' });
+  copy.addEventListener('click', function () {
+    status.textContent = '';
+    manual.textContent = '';
+    copyText(text, function (ok) {
+      if (ok) { status.textContent = 'Copied.'; return; }
+      var ta = el('textarea', { 'class': 'manual', readonly: '', rows: '8' });
+      ta.value = text;
+      manual.appendChild(ta);
+      manual.appendChild(el('p', { 'class': 'muted small', text: 'Press Ctrl+C to copy.' }));
+      ta.focus();
+      ta.select();
+    });
+  });
+  return el('div', { 'class': 'panel' }, [
+    el('b', { text: 'Copy prompt' }), levelRow, preview,
+    el('div', { 'class': 'row' }, [copy]), status, manual,
+  ]);
+}
+
+function pickChoice(letter, multi) {
+  if (review.graded || review.pending) return;
+  if (!multi) review.picks = [letter];
+  else if (review.picks.indexOf(letter) >= 0) review.picks = review.picks.filter(function (l) { return l !== letter; });
+  else review.picks = review.picks.concat([letter]).sort();
+  renderReview();
+}
+
+function primaryButton(id, n) {
+  var b;
+  if (!review.graded) {
+    b = el('button', { type: 'button', 'class': 'primary', text: review.pending ? 'Checking…' : 'Submit answer' });
+    b.disabled = review.pending || review.picks.length !== n;
+    b.addEventListener('click', function () { submitAnswer(id); });
+    return b;
+  }
+  var last = review.pos === review.ids.length - 1;
+  b = el('button', { type: 'button', 'class': 'primary', text: last ? 'Finish' : 'Next question' });
+  b.addEventListener('click', function () {
+    if (last) review.done = true;
+    else { review.pos++; resetQuestion(); }
+    renderReview();
+    window.scrollTo(0, 0);
+  });
+  return b;
+}
+
+// Sends the picks only. The server grades and returns the result.
+function submitAnswer(id) {
+  review.pending = true;
+  review.error = '';
+  renderReview();
+  google.script.run
+    .withSuccessHandler(function (res) {
+      review.pending = false;
+      if (res && res.error) {
+        review.error = res.message;
+        return renderReview();
+      }
+      var correct = lettersOf(res.correctAnswer);
+      review.graded = { result: res.result, correct: correct };
+      review.answered++;
+      if (res.result === 'correct') review.correct++;
+      if (homeData && homeData.states) homeData.states[id] = res.state;
+      if (homeData && res.counts) homeData.counts = res.counts;
+      // Explanations of picked and correct choices start open; the rest folded.
+      review.open = {};
+      review.picks.concat(correct).forEach(function (l) { review.open[l] = true; });
+      renderReview();
+    })
+    .withFailureHandler(function (err) {
+      review.pending = false;
+      review.error = 'Could not submit: ' + errorText(err);
+      renderReview();
+    })
+    .answerReview(id, review.picks);
+}
+
+function showMessage(text) {
+  show([el('div', { 'class': 'card error' }, [el('p', { text: text })])]);
+}
+
+function render(data) {
+  if (data && data.error) return showMessage(data.message);
+  var screen = data && screens[data.screen];
+  if (!screen) return showMessage('This screen is not built yet: ' + (data && data.screen));
+  show(screen(data));
+}
+
+google.script.run
+  .withSuccessHandler(render)
+  .withFailureHandler(function (err) { showMessage('Could not load the app: ' + (err && err.message ? err.message : err)); })
+  .load();
+</script>

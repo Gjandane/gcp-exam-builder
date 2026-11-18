@@ -1,0 +1,20 @@
+Practice questions
+
+Question 1
+Which Google Cloud service runs a managed Apache Beam pipeline?
+A. Dataflow
+B. Cloud Storage
+Answer: A
+Explanation: Dataflow is the managed runner for Apache Beam.
+
+Question 2
+Wich option is cheaper for fault-tolerant batch work?
+A. On-demand VMs
+B. Spot VMs
+C. Sole-tenant nodes
+Explanation: Spot VMs use spare capacity at a discount. On-demand VMs and sole-tenant nodes cost more.
+
+Question 3
+Look at the diagram. Which component fails?
+A. Router
+B. Switch

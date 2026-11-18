@@ -1,0 +1,240 @@
+<script>
+// Mock Test: the home card, the start panel, the pause screen and discard.
+// The test screen itself is client/testscreen.
+// Uses el, show, banner, render, showMessage and errorText from client/app.
+
+// H:MM:SS from seconds.
+function clockText(seconds) {
+  var s = Math.max(0, Math.floor(seconds));
+  var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+  return Math.floor(s / 3600) + ':' + pad(Math.floor(s / 60) % 60) + ':' + pad(s % 60);
+}
+
+function wholeInRange(text, min, max) {
+  return /^\d+$/.test(text) && +text >= min && +text <= max;
+}
+
+// The Mock Test card on home: Start with the Settings line, or Resume with progress.
+function mockCard(data) {
+  var t = data.mockTest;
+  var button = el('button', { type: 'button', 'class': 'primary', text: t ? 'Resume test' : 'Start Mock Test' });
+  var line = t
+    ? t.answered + ' of ' + t.question_count + ' answered · ' + clockText(t.seconds_left) + ' left · started ' + t.started_on
+    : data.settings.mock_question_count + ' questions · ' + data.settings.mock_minutes + ' min';
+  button.addEventListener('click', function () {
+    if (t) openPause();
+    else show(startPanel(data));
+  });
+  return el('div', { 'class': 'card home-card' }, [
+    el('h2', { text: 'Mock Test' }),
+    el('p', { 'class': 'muted', text: line }),
+    el('div', { 'class': 'row' }, [button]),
+  ]);
+}
+
+// The start panel. Count and minutes fill from Settings and apply to this test
+// only. Minutes follow the count until the user edits minutes by hand.
+function startPanel(data) {
+  var baseCount = +data.settings.mock_question_count;
+  var baseMinutes = +data.settings.mock_minutes;
+  var minutesByHand = false;
+  var count = el('input', { type: 'text', id: 'm_count', inputmode: 'numeric' });
+  var minutes = el('input', { type: 'text', id: 'm_minutes', inputmode: 'numeric' });
+  count.value = String(baseCount);
+  minutes.value = String(baseMinutes);
+  var countErr = el('p', { 'class': 'err' });
+  var minutesErr = el('p', { 'class': 'err' });
+  var note = el('p', { 'class': 'err' });
+  var startButton = el('button', { type: 'submit', 'class': 'primary', text: 'Start' });
+  var cancel = el('button', { type: 'button', text: 'Cancel' });
+  cancel.addEventListener('click', function () { show(screens.home(data)); });
+
+  function check() {
+    var okCount = wholeInRange(count.value.trim(), 1, 200);
+    var okMinutes = wholeInRange(minutes.value.trim(), 1, 600);
+    countErr.textContent = okCount ? '' : 'A whole number from 1 to 200.';
+    minutesErr.textContent = okMinutes ? '' : 'A whole number from 1 to 600.';
+    count.parentNode.className = okCount ? 'field' : 'field bad';
+    minutes.parentNode.className = okMinutes ? 'field' : 'field bad';
+    startButton.disabled = !(okCount && okMinutes);
+  }
+  count.addEventListener('input', function () {
+    var c = count.value.trim();
+    if (!minutesByHand && wholeInRange(c, 1, 200) && baseCount > 0) {
+      minutes.value = String(Math.ceil(+c * baseMinutes / baseCount));
+    }
+    check();
+  });
+  minutes.addEventListener('input', function () {
+    minutesByHand = true;
+    check();
+  });
+
+  var form = el('form', {}, [
+    el('div', { 'class': 'field' }, [el('label', { 'for': 'm_count', text: 'Questions' }), count, countErr]),
+    el('div', { 'class': 'field' }, [el('label', { 'for': 'm_minutes', text: 'Minutes' }), minutes, minutesErr]),
+    el('p', { 'class': 'muted small', text: 'These values apply to this test only. Settings stay as they are.' }),
+    note,
+    el('div', { 'class': 'row' }, [startButton, cancel]),
+  ]);
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (startButton.disabled) return;
+    startButton.disabled = true;
+    note.textContent = '';
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (res && res.error) {
+          startButton.disabled = false;
+          note.textContent = res.message;
+          return;
+        }
+        homeData.mockTest = testSummary(res.test);
+        show(pauseScreen(res.test, res.notices || []));
+      })
+      .withFailureHandler(function (err) {
+        startButton.disabled = false;
+        note.textContent = 'Could not start: ' + errorText(err);
+      })
+      .startMockTest(count.value.trim(), minutes.value.trim());
+  });
+  return [el('div', { 'class': 'card' }, [el('h1', { text: 'Start Mock Test' }), form])];
+}
+
+// Reads the unfinished test and shows the pause screen.
+function openPause() {
+  show([el('div', { 'class': 'card' }, [el('p', { 'class': 'muted', text: 'Loading…' })])]);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.error) return showMessage(res.message);
+      if (res.discarded) return homeDiscarded(res.notices);
+      if (!res.test) return homeWithTest(null);
+      noteReimport(res.test, res);
+      show(pauseScreen(res.test, res.notices || []));
+    })
+    .withFailureHandler(function (err) { showMessage('Could not open the test: ' + errorText(err)); })
+    .getMockTest();
+}
+
+// Home from the data in hand: the client calls load() once per page load.
+// `test` is the unfinished test to summarise, or null.
+function homeWithTest(test) {
+  dropRun();
+  homeData.mockTest = testSummary(test);
+  show(screens.home(homeData));
+}
+
+// Home with the notice that a re-import left the test with no question.
+function homeDiscarded(notices) {
+  dropRun();
+  homeData.mockTest = null;
+  show((notices || []).map(function (n) { return noticeBanner(n); }).concat(screens.home(homeData)));
+}
+
+// A re-import changed the test (spec 0002, Re-import during a test). The
+// server sent the current bank rows of the reset items: swap them into the
+// client's bank. `pageReset` remembers the reset questions for this page
+// session, which the pill and the dashed border read.
+var pageReset = {};
+
+function noteReimport(test, res) {
+  (res.resetRows || []).forEach(function (row) {
+    for (var i = 0; i < bank.length; i++) if (bank[i].id === row.id) { bank[i] = row; return; }
+  });
+  (res.notices || []).forEach(function (n) {
+    (n.links || []).forEach(function (position) {
+      var item = test.items && test.items[position - 1];
+      if (item) pageReset[item.question_id] = true;
+    });
+  });
+}
+
+// An amber, dismissible notice. `notice` is a string, or {text, links} where
+// links are the positions of the reset questions, shown as links that call
+// `onLink(position)`. `onDismiss` defaults to removing the node.
+function noticeBanner(notice, onLink, onDismiss) {
+  var text = typeof notice === 'string' ? notice : notice.text;
+  var body = el('span', {}, [document.createTextNode(text)]);
+  var links = (notice && notice.links) || [];
+  links.forEach(function (position, k) {
+    body.appendChild(document.createTextNode(k === 0 ? ' ' : ', '));
+    var a = el('a', { href: '#', text: 'Question ' + position });
+    a.addEventListener('click', function (e) { e.preventDefault(); if (onLink) onLink(position); });
+    body.appendChild(a);
+  });
+  var node = el('div', { 'class': 'banner' }, [body]);
+  var close = el('button', { type: 'button', 'class': 'dismiss', 'aria-label': 'Dismiss', text: '×' });
+  close.addEventListener('click', function () { if (onDismiss) onDismiss(); else node.remove(); });
+  node.appendChild(close);
+  return node;
+}
+
+// The home card's summary of a test, as load() sends it.
+function testSummary(test) {
+  return test
+    ? { answered: test.answered, question_count: test.question_count, seconds_left: test.seconds_left, started_on: test.started_on }
+    : null;
+}
+
+// The pause screen: time left, answered and Flagged counts, notices, Resume
+// and "Discard test…". The question and navigator are hidden.
+function pauseScreen(test, notices) {
+  var resume = el('button', { type: 'button', 'class': 'go', text: 'Resume' });
+  resume.addEventListener('click', function () { resumeTest(test, notices); });
+  var discard = el('a', { href: '#', 'class': 'muted', text: 'Discard test…' });
+  discard.addEventListener('click', function (e) {
+    e.preventDefault();
+    show(discardConfirm(test, notices));
+  });
+  var home = el('a', { href: '#', text: 'Home' });
+  home.addEventListener('click', function (e) { e.preventDefault(); homeWithTest(test); });
+  // A link on the pause screen resumes the test at that question.
+  function openAt(position) {
+    resumeTest(test, notices);
+    if (testRun) goTo(testRun, position - 1);
+  }
+  return [el('p', { 'class': 'top' }, [home])].concat(notices.map(function (n) { return noticeBanner(n, openAt); })).concat([
+    el('div', { 'class': 'card pause' }, [
+      el('h1', { text: 'Paused' }),
+      el('div', { 'class': 'muted', text: 'Time left' }),
+      el('div', { 'class': 'bigclock', text: clockText(test.seconds_left) }),
+      el('p', { 'class': 'muted', text: test.answered + ' of ' + test.question_count + ' answered · ⚑ ' + test.flagged + ' Flagged. The question is hidden while paused.' }),
+      el('div', { 'class': 'row' }, [resume]),
+      el('p', {}, [discard]),
+    ]),
+  ]);
+}
+
+function discardConfirm(test, notices) {
+  var keep = el('button', { type: 'button', text: 'Keep test' });
+  keep.addEventListener('click', function () { show(pauseScreen(test, notices)); });
+  var go = el('button', { type: 'button', 'class': 'danger', text: 'Discard test' });
+  var note = el('p', { 'class': 'err' });
+  go.addEventListener('click', function () {
+    go.disabled = true;
+    keep.disabled = true;
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (res && res.error && res.error !== 'not_unfinished') {
+          go.disabled = false;
+          keep.disabled = false;
+          note.textContent = res.message;
+          return;
+        }
+        homeWithTest(null);
+      })
+      .withFailureHandler(function (err) {
+        go.disabled = false;
+        keep.disabled = false;
+        note.textContent = 'Could not discard: ' + errorText(err);
+      })
+      .discardMockTest();
+  });
+  return [el('div', { 'class': 'card pause' }, [
+    el('h1', { text: 'Discard this test?' }),
+    el('p', { text: 'Your ' + test.answered + ' answers are thrown away. Nothing is scored and no question\'s review schedule changes.' }),
+    note,
+    el('div', { 'class': 'row' }, [keep, go]),
+  ])];
+}
+</script>

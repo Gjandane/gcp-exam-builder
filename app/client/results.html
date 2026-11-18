@@ -1,0 +1,323 @@
+<script>
+// The results screen (spec 0002, Results screen): the header, Score by Section
+// and a read-only review of every question. getResults rebuilds any submitted
+// test from its rows, so nothing here is stored. Uses el, show, goHome, bank,
+// questionById, lettersOf, choicesOf, richText, choiceLabel, subdomainPill,
+// actionsGrid, bookmarkButton, noteButton, reportButton, reportPanel,
+// copyPanel, errorText, showMessage and clockText from the other client files.
+//
+//   openResults(testId, lead, notices)  lead: the blue line text, or '' for a past test.
+//   notices: optional re-import notices shown above the header.
+//
+// resultsRun holds the screen: {data, lead, filter, flagged, cur, open, panel,
+// error, expanded}. `cur` is an index into data.attempts, which are in test order.
+
+var SUBMITTED_TEXT = 'Test submitted.';
+var TIMED_OUT_TEXT = 'Time ran out. The test submitted itself; unanswered questions count as skipped.';
+var RESULT_FILTERS = [['all', 'All'], ['correct', 'Correct'], ['wrong', 'Wrong'], ['skipped', 'Skipped']];
+var RESULT_WORDS = { correct: 'Correct', wrong: 'Wrong', skipped: 'Skipped' };
+var COPY_DISABLED_TEXT = 'Disabled: the question changed since this test, so the stored answer may not match these choices.';
+var FLAG_TOOLTIP = 'Only questions you Flagged during the test. Combines with the result filter.';
+var NOT_IN_BANK_TOOLTIP = 'Questions removed from the bank since this test. Still in the score.';
+
+// Fetches a submitted test and opens its results.
+function openResults(testId, lead, notices) {
+  show([el('div', { 'class': 'card' }, [el('p', { 'class': 'muted', text: 'Loading…' })])]);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.error) return showMessage(res.message);
+      resultsRun = { data: res, lead: lead || '', notices: notices || [], filter: 'all', flagged: false, cur: 0, expanded: {}, open: {}, panel: null, error: '' };
+      selectAttempt(0);
+      renderResults();
+      window.scrollTo(0, 0);
+    })
+    .withFailureHandler(function (err) { showMessage('Could not open the results: ' + errorText(err)); })
+    .getResults(testId);
+}
+
+function resultsHeader(test, lead) {
+  var home = el('a', { href: '#', text: 'Home' });
+  home.addEventListener('click', function (e) {
+    e.preventDefault();
+    goHome();
+  });
+  var history = el('a', { href: '#', text: '← Mock Test history' });
+  history.addEventListener('click', function (e) {
+    e.preventDefault();
+    openHistory();
+  });
+  var allowed = test.minutes_allowed * 60;
+  var used = Math.max(0, allowed - test.seconds_left);
+  var dateLine = [document.createTextNode('Mock Test · ' + test.submitted_on)];
+  if (test.seconds_left === 0) dateLine.push(el('span', { 'class': 'pill to', text: '⏱ timed out' }));
+  function stat(value, label) {
+    return el('div', { 'class': 'stat' }, [el('b', { text: value }), el('span', { text: label })]);
+  }
+  var nodes = [el('p', { 'class': 'top' }, [home, document.createTextNode(' · '), history])];
+  if (lead) nodes.push(el('div', { 'class': 'justsub', role: 'status', text: lead }));
+  nodes.push(el('div', { 'class': 'card' }, [
+    el('div', { 'class': 'muted' }, dateLine),
+    el('div', { 'class': 'score', text: test.score_pct + '%' }),
+    el('div', { 'class': 'stats' }, [
+      stat(test.correct_count + ' / ' + test.question_count, 'correct'),
+      stat(String(test.skipped), 'skipped'),
+      stat(clockText(used), 'time used of ' + clockText(allowed)),
+    ]),
+  ]));
+  return nodes;
+}
+
+// ---- Score by Section
+
+function scoreRow(cls, label, row, title) {
+  var attrs = { 'class': 'brow ' + cls };
+  if (title) attrs.title = title;
+  return el('div', attrs, [
+    el('span', { 'class': 'blabel', text: label }),
+    el('span', { text: row.correct + ' / ' + row.count }),
+    el('span', { 'class': 'bpct', text: row.pct + '%' }),
+  ]);
+}
+
+function breakdownCard(breakdown) {
+  var kids = [el('h2', { text: 'Score by Section' })];
+  breakdown.sections.forEach(function (sec) {
+    var open = !!resultsRun.expanded[sec.section];
+    var head = el('button', { type: 'button', 'class': 'brow sec', 'aria-expanded': String(open) }, [
+      el('span', { 'class': 'blabel', text: (open ? '▾ ' : '▸ ') + sec.label }),
+      el('span', { text: sec.correct + ' / ' + sec.count }),
+      el('span', { 'class': 'bpct', text: sec.pct + '%' }),
+    ]);
+    head.addEventListener('click', function () {
+      resultsRun.expanded[sec.section] = !open;
+      renderResults();
+    });
+    kids.push(head);
+    if (open) sec.subdomains.forEach(function (sub) { kids.push(scoreRow('sub', sub.subdomain + ' ' + sub.title, sub)); });
+  });
+  if (breakdown.notInBank) kids.push(scoreRow('missing', 'Not in bank', breakdown.notInBank, NOT_IN_BANK_TOOLTIP));
+  kids.push(scoreRow('total', 'Total', breakdown.total));
+  kids.push(el('p', { 'class': 'muted small', text: 'Skipped counts as wrong. Grouped by each question\'s Subdomain today.' }));
+  return el('div', { 'class': 'card' }, kids);
+}
+
+// ---- Filter and grid
+
+function inFilter(a) {
+  var run = resultsRun;
+  return (!run.flagged || a.flagged) && (run.filter === 'all' || a.result === run.filter);
+}
+
+function filteredIndexes() {
+  var out = [];
+  resultsRun.data.attempts.forEach(function (a, i) { if (inFilter(a)) out.push(i); });
+  return out;
+}
+
+// Opens one question: its explanations start open by the card rule, no panel.
+function selectAttempt(i) {
+  var run = resultsRun;
+  var a = run.data.attempts[i];
+  run.cur = i;
+  run.panel = null;
+  run.error = '';
+  run.open = {};
+  var q = a ? questionById(a.question_id) : null;
+  if (!q) return;
+  lettersOf(q.answer).forEach(function (l) { run.open[l] = true; });
+  if (!a.edited) lettersOf(a.selected).forEach(function (l) { run.open[l] = true; });
+}
+
+// Changes the filter; the current question moves to the first in the new list when it falls out.
+function setResultFilter(filter, flagged) {
+  var run = resultsRun;
+  run.filter = filter;
+  run.flagged = flagged;
+  var list = filteredIndexes();
+  if (list.length && list.indexOf(run.cur) < 0) selectAttempt(list[0]);
+  renderResults();
+}
+
+function resultFilterBar(attempts) {
+  var run = resultsRun;
+  var buttons = RESULT_FILTERS.map(function (f) {
+    // Counts follow the Flagged toggle.
+    var count = attempts.filter(function (a) { return (!run.flagged || a.flagged) && (f[0] === 'all' || a.result === f[0]); }).length;
+    var b = el('button', { type: 'button', 'class': run.filter === f[0] ? 'on' : '', text: f[1] + ' ' + count });
+    b.addEventListener('click', function () { setResultFilter(f[0], run.flagged); });
+    return b;
+  });
+  var flagCount = attempts.filter(function (a) { return a.flagged; }).length;
+  var toggle = el('button', {
+    type: 'button', 'class': 'flagtoggle' + (run.flagged ? ' on' : ''), 'aria-pressed': String(run.flagged),
+    title: FLAG_TOOLTIP, text: '⚑ Flagged ' + flagCount,
+  });
+  toggle.addEventListener('click', function () { setResultFilter(run.filter, !run.flagged); });
+  return el('div', { 'class': 'filters' }, buttons.concat([toggle]));
+}
+
+function resultGrid(attempts) {
+  var run = resultsRun;
+  var cells = attempts.map(function (a, i) {
+    var inside = inFilter(a);
+    var cls = 'nc r' + a.result;
+    if (a.flagged) cls += ' flag';
+    if (!inside) cls += ' dim';
+    else if (i === run.cur) cls += ' cur';
+    var kids = [document.createTextNode(String(a.position))];
+    if (a.bank === 'missing') kids.push(el('span', { 'class': 'mk', title: 'Not in the bank', text: '∅' }));
+    else if (a.edited) kids.push(el('span', { 'class': 'mk', title: 'Edited since this test', text: '✎' }));
+    var b = el('button', { type: 'button', 'class': cls, 'aria-label': 'Question ' + a.position + ', ' + a.result }, kids);
+    b.disabled = !inside;
+    b.addEventListener('click', function () { selectAttempt(i); renderResults(); });
+    return b;
+  });
+  return el('div', { 'class': 'navgrid' }, cells);
+}
+
+function resultLegend() {
+  function item(cls, text) { return el('span', {}, [el('i', { 'class': cls }), document.createTextNode(text)]); }
+  return el('div', { 'class': 'legend' }, [
+    item('rok', 'correct'), item('rbad', 'wrong'), item('rskip', 'skipped'),
+    el('span', { text: '⚑ Flagged' }), el('span', { text: '✎ edited since this test' }), el('span', { text: '∅ not in the bank' }),
+  ]);
+}
+
+// "No Flagged wrong questions in this test." with Show all.
+function emptyCard() {
+  var run = resultsRun;
+  var words = [];
+  if (run.flagged) words.push('Flagged');
+  if (run.filter !== 'all') words.push(run.filter);
+  var showAll = el('button', { type: 'button', text: 'Show all' });
+  showAll.addEventListener('click', function () { setResultFilter('all', false); });
+  return el('div', { 'class': 'card' }, [
+    el('p', { text: 'No ' + words.concat(['questions']).join(' ') + ' in this test.' }),
+    el('div', { 'class': 'row' }, [showAll]),
+  ]);
+}
+
+// ---- The question card, read-only
+
+function walkButtons(list) {
+  var run = resultsRun;
+  var at = list.indexOf(run.cur);
+  var prev = el('button', { type: 'button', text: '← Previous' });
+  prev.disabled = at <= 0;
+  prev.addEventListener('click', function () { selectAttempt(list[at - 1]); renderResults(); });
+  var next = el('button', { type: 'button', text: 'Next →' });
+  next.disabled = at < 0 || at >= list.length - 1;
+  next.addEventListener('click', function () { selectAttempt(list[at + 1]); renderResults(); });
+  return el('div', { 'class': 'prevnext' }, [prev, next]);
+}
+
+// A question gone from the bank: one dashed line, no buttons.
+function missingLine(a) {
+  var kids = [
+    el('b', { text: 'Question ' + a.position }),
+    document.createTextNode(' · ' + a.question_id + ' · no longer in the bank · '),
+    el('span', { 'class': 'rtag ' + a.result, text: RESULT_WORDS[a.result] }),
+  ];
+  if (a.flagged) kids.push(el('span', { 'class': 'pill flag', text: '⚑ Flagged' }));
+  return el('div', { 'class': 'missingline' }, kids);
+}
+
+function resultBanner(a, q) {
+  var title = a.result === 'correct' ? '✓ Correct!' : a.result === 'wrong' ? '✕ Incorrect' : '– Skipped';
+  var cls = a.result === 'correct' ? 'ok' : a.result === 'wrong' ? 'bad' : 'skip';
+  var kids = [el('b', { text: title })];
+  if (a.edited) kids.push(document.createTextNode('Recorded at the test.'));
+  else if (a.result === 'wrong') kids.push(document.createTextNode('Correct answer: ' + lettersOf(q.answer).join(', ') + '. You picked ' + lettersOf(a.selected).join(', ') + '.'));
+  else if (a.result === 'skipped') kids.push(document.createTextNode('Not answered. Correct answer: ' + lettersOf(q.answer).join(', ') + '.'));
+  return el('div', { 'class': 'result ' + cls }, kids);
+}
+
+function resultChoices(a, q) {
+  var run = resultsRun;
+  var answer = lettersOf(q.answer);
+  var picks = a.edited ? [] : lettersOf(a.selected);
+  var multi = answer.length > 1;
+  var nodes = [];
+  choicesOf(q).forEach(function (c) {
+    var picked = picks.indexOf(c.letter) >= 0;
+    var correct = answer.indexOf(c.letter) >= 0;
+    var cls = 'choice locked';
+    var mark = '';
+    if (correct) { cls += ' correct'; mark = picked ? '✓ your pick' : '✓ correct'; }
+    else if (picked) { cls += ' wrongpick'; mark = '✕ your pick'; }
+    var input = el('input', { type: multi ? 'checkbox' : 'radio', name: 'pick', value: c.letter });
+    input.checked = picked;
+    input.disabled = true;
+    nodes.push(choiceLabel(input, c.letter, c.text, cls, mark));
+    var open = !!run.open[c.letter];
+    var head = el('button', { type: 'button', 'class': 'exhead', 'aria-expanded': String(open) }, [
+      el('span', { text: (correct ? '✓' : '✕') + ' Explanation' }),
+      el('span', { text: open ? '▴' : '▾' }),
+    ]);
+    head.addEventListener('click', function () { run.open[c.letter] = !run.open[c.letter]; renderResults(); });
+    nodes.push(head);
+    if (open) nodes.push(el('div', { 'class': 'exbody' }, [richText(c.explanation)]));
+  });
+  return nodes;
+}
+
+function resultCard(a, list) {
+  var run = resultsRun;
+  var q = questionById(a.question_id);
+  if (!q || a.bank === 'missing') return el('div', { 'class': 'card' }, [missingLine(a), walkButtons(list)]);
+  var nodes = [];
+  if (a.edited) {
+    nodes.push(el('div', { 'class': 'notice', text: 'Edited since this test. The question and its answer below are today\'s. The result is the one recorded at the test.' }));
+  }
+  nodes.push(el('div', { 'class': 'qhead' }, [
+    el('span', { 'class': 'qnum', text: 'Question ' + a.position + ' of ' + run.data.attempts.length }),
+    el('span', { 'class': 'rtag ' + a.result, text: RESULT_WORDS[a.result] }),
+  ]));
+  var pills = [subdomainPill(q)];
+  if (String(q.uncertain).toUpperCase() === 'TRUE') {
+    pills.push(el('span', {
+      'class': 'pill warn',
+      title: 'This answer is disputed or was given with low confidence. Check it before you trust it.',
+      text: '⚠ Uncertain answer',
+    }));
+  }
+  if (a.flagged) pills.push(el('span', { 'class': 'pill flag', text: '⚑ Flagged' }));
+  if (a.bank === 'retired') pills.push(el('span', { 'class': 'pill', text: 'retired' }));
+  nodes.push(el('div', {}, pills));
+  nodes.push(el('div', { 'class': 'stem' }, [richText(q.question)]));
+  nodes.push(el('div', { 'class': 'selhint', text: 'Select ' + lettersOf(q.answer).length + '.' }));
+  nodes = nodes.concat(resultChoices(a, q));
+  nodes.push(resultBanner(a, q));
+
+  var copy = el('button', { type: 'button', text: '⧉ Copy prompt' });
+  if (a.edited) {
+    copy.disabled = true;
+    copy.title = COPY_DISABLED_TEXT;
+  } else {
+    copy.addEventListener('click', function () {
+      run.panel = run.panel && run.panel.kind === 'copy' ? null : { kind: 'copy' };
+      renderResults();
+    });
+  }
+  nodes.push(actionsGrid([bookmarkButton(a.question_id), noteButton(a.question_id), reportButton(a.question_id), copy]));
+  if (run.panel && run.panel.kind === 'report') nodes.push(reportPanel(a.question_id));
+  if (run.panel && run.panel.kind === 'copy' && !a.edited) {
+    nodes.push(copyPanel(q, { picked: lettersOf(a.selected), result: a.result }, renderResults));
+  }
+  if (run.error) nodes.push(el('p', { 'class': 'err', text: run.error }));
+  nodes.push(walkButtons(list));
+  return el('div', { 'class': 'card' }, nodes);
+}
+
+function renderResults() {
+  var run = resultsRun;
+  var data = run.data;
+  var list = filteredIndexes();
+  var reviewCard = el('div', { 'class': 'card' }, [
+    el('h2', { text: 'Review' }),
+    resultFilterBar(data.attempts), resultGrid(data.attempts), resultLegend(),
+  ]);
+  var body = list.length ? resultCard(data.attempts[run.cur], list) : emptyCard();
+  show([el('div', { 'class': 'review' }, run.notices.map(function (n) { return noticeBanner(n); }).concat(resultsHeader(data.test, run.lead), [breakdownCard(data.breakdown), reviewCard, body]))]);
+}
+</script>

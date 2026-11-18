@@ -1,0 +1,523 @@
+<script>
+// The Mock Test screen (spec 0002, Mock Test: Screen, Saving, Pause and timer).
+// The question card is the Review mode card without grading: the same markup,
+// the same Bookmark, Note and Report code (see cardView in client/app). Uses el,
+// show, banner, bank, homeData, questionById, lettersOf, choicesOf, richText,
+// bookmarkButton, noteButton, reportButton, reportPanel, errorText, clockText,
+// pauseScreen, homeWithTest and screens from the other client files.
+//
+// `testRun` (declared in client/app) holds the test on screen:
+//   id, startedOn, count, items [{position, question_id, order, picks, flagged}],
+//   pos, seconds_left + clockStart (the clock), pending (unsaved changes by
+//   position), inflight, again, failures, panel, error, hint, notices,
+//   confirm (the submit confirm is open), submitting, submitError, autoTried.
+// `order` is the item's choice_order, stored letters in display order. `picks`
+// are display letters; they turn into stored letters in storedPicks, the one
+// place that maps them before a send.
+
+var SAVE_FAILURES_SHOWN = 3;
+var LOW_SECONDS = 300;
+var STALE_TEXT = 'This test was already submitted or discarded in another tab.';
+
+// ---- Letters: display <-> stored
+
+function storedPicks(item) {
+  return item.picks.map(function (d) { return item.order.charAt(LETTERS.indexOf(d)); }).sort();
+}
+
+function displayPicks(order, stored) {
+  return lettersOf(stored).map(function (s) { return LETTERS[order.indexOf(s)]; }).filter(Boolean).sort();
+}
+
+// ---- Answered rule: the server's. N picks is answered, 1 to N-1 part answered.
+
+function needOf(item) {
+  var q = questionById(item.question_id);
+  return q ? Math.max(1, lettersOf(q.answer).length) : 1;
+}
+
+function itemState(item) {
+  var n = item.picks.length;
+  if (n === 0) return 'none';
+  return n >= needOf(item) ? 'ans' : 'part';
+}
+
+function runCounts(run) {
+  var c = { ans: 0, part: 0, none: 0, flag: 0 };
+  run.items.forEach(function (item) {
+    c[itemState(item)]++;
+    if (item.flagged) c.flag++;
+  });
+  return c;
+}
+
+// The pause screen and home card summary of the run in memory.
+function runSummary(run) {
+  var c = runCounts(run);
+  return { test_id: run.id, started_on: run.startedOn, question_count: run.items.length, seconds_left: runSeconds(run), answered: c.ans, flagged: c.flag };
+}
+
+// ---- The run and its clock
+
+// Builds the run from a test the server sent. A reopened test lands on its
+// first unanswered question, else the first: the sheet stores no position.
+function makeRun(test, notices) {
+  var run = {
+    id: test.test_id, startedOn: test.started_on, count: test.question_count,
+    items: test.items.map(function (i) {
+      return {
+        position: i.position, question_id: i.question_id, order: i.choice_order, picks: displayPicks(i.choice_order, i.selected),
+        flagged: i.flagged, reset: !!pageReset[i.question_id],
+      };
+    }),
+    pos: 0, seconds_left: test.seconds_left, clockStart: null, timer: null, timerEl: null,
+    pending: {}, inflight: false, again: false, failures: 0,
+    panel: null, error: '', hint: '', notices: (notices || []).slice(), paused: false,
+    confirm: false, confirmTimerEl: null, submitting: false, timedOut: false, submitError: '', autoTried: false,
+  };
+  for (var i = 0; i < run.items.length; i++) {
+    if (itemState(run.items[i]) !== 'ans') { run.pos = i; break; }
+  }
+  return run;
+}
+
+function runSeconds(run) {
+  if (run.clockStart === null) return run.seconds_left;
+  return Math.max(0, run.seconds_left - Math.floor((Date.now() - run.clockStart) / 1000));
+}
+
+// Counts from Date.now(), not ticks: a background tab throttles its timers.
+function startClock(run) {
+  if (run.clockStart !== null) return;
+  run.clockStart = Date.now();
+  run.timer = setInterval(function () { tick(run); }, 1000);
+}
+
+function stopClock(run) {
+  if (run.clockStart === null) return;
+  run.seconds_left = runSeconds(run);
+  run.clockStart = null;
+  clearInterval(run.timer);
+  run.timer = null;
+}
+
+function paintTimer(run) {
+  var s = runSeconds(run);
+  [run.timerEl, run.confirmTimerEl].forEach(function (node) {
+    if (!node) return;
+    node.textContent = clockText(s);
+    node.className = 'timer' + (s < LOW_SECONDS ? ' low' : '');
+  });
+}
+
+// The display clamps at 0:00. At zero the test submits itself, once.
+function tick(run) {
+  if (testRun !== run) return stopClock(run);
+  paintTimer(run);
+  if (runSeconds(run) === 0 && !run.submitting && !run.autoTried) {
+    run.autoTried = true;
+    submitAtZero(run);
+  }
+}
+
+// Leaves the test screen for good: no clock, no run.
+function dropRun() {
+  if (!testRun) return;
+  // Changes a failed save kept get one last try on the way out.
+  if (!testRun.inflight && pendingList(testRun).length) sendSave(testRun);
+  stopClock(testRun);
+  testRun = null;
+}
+
+// ---- Saving: changes by position, one call in flight, failures counted
+
+function queueChange(run, item) {
+  run.pending[item.position] = { position: item.position, selected: storedPicks(item), flagged: item.flagged };
+  sendSave(run);
+}
+
+function pendingList(run) {
+  return Object.keys(run.pending).map(function (k) { return run.pending[k]; });
+}
+
+// Sends the unsaved changes and the clock in one call. A call already in flight
+// finishes first; the next one carries what was queued meanwhile.
+function sendSave(run) {
+  if (run.inflight) { run.again = true; return; }
+  var sent = pendingList(run);
+  run.pending = {};
+  run.inflight = true;
+  run.again = false;
+  function done() {
+    run.inflight = false;
+    if (testRun === run && run.again) sendSave(run);
+  }
+  function failed() {
+    run.failures++;
+    // Keep the failed changes, but a newer edit of the same question wins.
+    sent.forEach(function (c) { if (!run.pending[c.position]) run.pending[c.position] = c; });
+    if (run.failures === SAVE_FAILURES_SHOWN && testRun === run) rerender();
+  }
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.error === 'not_unfinished') { run.inflight = false; return staleTest(run); }
+      if (res && res.error) { failed(); return done(); }
+      var hadBanner = run.failures >= SAVE_FAILURES_SHOWN;
+      run.failures = 0;
+      if (hadBanner && testRun === run) rerender();
+      done();
+    })
+    .withFailureHandler(function () { failed(); done(); })
+    .saveMockTest(sent, runSeconds(run));
+}
+
+// Another tab submitted or discarded the test: back to home with the message.
+function staleTest(run) {
+  // A save that lands after this tab's own submit: the submit's reply decides.
+  if (testRun !== run || run.submitting) return;
+  dropRun();
+  homeData.mockTest = null;
+  show([banner({ text: STALE_TEXT })].concat(screens.home(homeData)));
+}
+
+// ---- Actions
+
+function pickAt(run, item, letter) {
+  var need = needOf(item);
+  run.hint = '';
+  if (need === 1) item.picks = [letter];
+  else if (item.picks.indexOf(letter) >= 0) item.picks = item.picks.filter(function (l) { return l !== letter; });
+  else if (item.picks.length >= need) { run.hint = 'Unpick one first'; return renderTest(); }
+  else item.picks = item.picks.concat([letter]).sort();
+  queueChange(run, item);
+  renderTest();
+}
+
+function clearPicks(run, item) {
+  run.hint = '';
+  item.picks = [];
+  queueChange(run, item);
+  renderTest();
+}
+
+function toggleFlag(run, item) {
+  run.hint = '';
+  item.flagged = !item.flagged;
+  queueChange(run, item);
+  renderTest();
+}
+
+function goTo(run, i) {
+  run.pos = Math.max(0, Math.min(run.items.length - 1, i));
+  run.panel = null;
+  run.hint = '';
+  run.error = '';
+  renderTest();
+  window.scrollTo(0, 0);
+}
+
+// Pause: an open note saves first, then the clock freezes, the screen is
+// replaced and the changes and the clock go in one save.
+function pauseTest(run) {
+  run.paused = true; // a late re-render, such as the note's, must not redraw the test
+  function go() {
+    stopClock(run);
+    run.panel = null;
+    run.confirm = false;
+    sendSave(run);
+    show(pauseScreen(runSummary(run), run.notices));
+  }
+  if (!flushNotePanel) return go();
+  flushNotePanel(function (failure) {
+    if (failure) { run.paused = false; return; } // the panel stays open with its message and the clock keeps running
+    go();
+  });
+}
+
+// Resume restarts the clock at the question left. No server call: a run in
+// memory is reused, a test the server just sent becomes a run.
+function resumeTest(test, notices) {
+  if (testRun && testRun.id === test.test_id) {
+    testRun.paused = false;
+    startClock(testRun);
+    return renderTest();
+  }
+  dropRun();
+  testRun = makeRun(test, notices);
+  startClock(testRun);
+  renderTest();
+}
+
+// ---- Screen
+
+function saveFailedBanner(run) {
+  if (run.failures < SAVE_FAILURES_SHOWN) return [];
+  return [el('div', { 'class': 'banner red', role: 'alert' }, [el('span', { text: 'Not saved. Check your connection.' })])];
+}
+
+function noticeBanners(run) {
+  return run.notices.map(function (notice, k) {
+    return noticeBanner(notice, function (position) { goTo(run, position - 1); }, function () { run.notices.splice(k, 1); renderTest(); });
+  });
+}
+
+function renderTest() {
+  var run = testRun;
+  if (!run || run.paused) return;
+  var item = run.items[run.pos];
+  run.confirmTimerEl = null;
+  var nodes = [el('div', { 'class': 'review' }, saveFailedBanner(run).concat(noticeBanners(run), [testCard(run, item), navigatorCard(run)]))];
+  if (run.submitting) nodes.push(submittingOverlay(run));
+  else if (run.confirm) nodes.push(confirmModal(run));
+  show(nodes);
+}
+
+// ---- Submit (spec 0002, Submit confirm and Submit)
+
+function openConfirm(run) {
+  run.confirm = true;
+  run.panel = null;
+  run.hint = '';
+  run.submitError = '';
+  renderTest();
+}
+
+// Jump buttons by question number: a jump closes the modal and opens that question.
+function jumpButtons(run, indexes) {
+  if (!indexes.length) return [];
+  return [el('div', { 'class': 'jump' }, indexes.map(function (i) {
+    var b = el('button', { type: 'button', text: String(i + 1) });
+    b.addEventListener('click', function () { run.confirm = false; goTo(run, i); });
+    return b;
+  }))];
+}
+
+// The submit confirm. The clock keeps running behind it.
+function confirmModal(run) {
+  var c = runCounts(run);
+  var unanswered = [];
+  var flagged = [];
+  run.items.forEach(function (item, i) {
+    if (itemState(item) !== 'ans') unanswered.push(i);
+    if (item.flagged) flagged.push(i);
+  });
+  var s = runSeconds(run);
+  run.confirmTimerEl = el('span', { 'class': 'timer' + (s < LOW_SECONDS ? ' low' : ''), text: clockText(s) });
+  var back = el('button', { type: 'button', text: 'Back to test' });
+  back.addEventListener('click', function () { run.confirm = false; renderTest(); });
+  var go = el('button', { type: 'button', 'class': 'go', text: 'Submit test' });
+  go.addEventListener('click', function () { submitTest(run, runSeconds(run) === 0); });
+  var line = [el('b', { text: String(unanswered.length) }), document.createTextNode(' unanswered' + (c.part ? ' (' + c.part + ' part answered)' : '') + '.' +
+    (unanswered.length ? ' Unanswered count as skipped, part answered as wrong.' : ''))];
+  var kids = [
+    el('h3', { text: 'Submit test?' }),
+    el('p', {}, line),
+  ].concat(jumpButtons(run, unanswered), [
+    el('p', { 'class': 'flagline' }, [el('b', { 'class': 'flagcount', text: String(flagged.length) }), document.createTextNode(' ⚑ Flagged.')]),
+  ], jumpButtons(run, flagged), [
+    el('p', { 'class': 'muted' }, [document.createTextNode('Time left '), run.confirmTimerEl,
+      document.createTextNode('. The clock keeps running while this is open. You cannot change answers after submitting.')]),
+  ]);
+  if (run.submitError) kids.push(el('p', { 'class': 'err', role: 'alert', text: run.submitError }));
+  kids.push(el('div', { 'class': 'row' }, [back, go]));
+  return el('div', { 'class': 'overlay' }, [el('div', { 'class': 'modal', role: 'dialog', 'aria-label': 'Submit test' }, kids)]);
+}
+
+function submittingOverlay(run) {
+  return el('div', { 'class': 'overlay' }, [el('div', { 'class': 'modal' }, [
+    el('h3', { text: run.timedOut ? 'Time is up' : 'Submitting…' }),
+    el('p', { 'class': 'muted', text: 'Grading the test.' }),
+  ])]);
+}
+
+// At zero: no confirm. Close the confirm and any open panel, save an open
+// note, then submit. A note that fails to save does not hold the submit: its
+// panel stays open over the results with the message and the text, so a close
+// can save it again.
+function submitAtZero(run) {
+  run.confirm = false;
+  run.panel = null;
+  run.hint = '';
+  if (!flushNotePanel) return submitTest(run, true);
+  flushNotePanel(function () { submitTest(run, true); });
+}
+
+// Sends every item with the submit, so a change still queued or in flight is
+// graded too; the server writes only what differs. The clock stops while the
+// call runs and restarts when it fails.
+function submitTest(run, timedOut) {
+  if (run.submitting || testRun !== run) return;
+  run.submitting = true;
+  run.timedOut = timedOut;
+  run.submitError = '';
+  run.pending = {};
+  var changes = run.items.map(function (item) { return { position: item.position, selected: storedPicks(item), flagged: item.flagged }; });
+  var seconds = timedOut ? 0 : runSeconds(run);
+  stopClock(run);
+  renderTest();
+  function failed(message) {
+    run.submitting = false;
+    run.submitError = message;
+    run.confirm = true;
+    if (testRun === run) {
+      startClock(run);
+      renderTest();
+    }
+  }
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (res && res.error === 'not_unfinished') { run.submitting = false; return staleTest(run); }
+      if (res && res.error) return failed(res.message);
+      // The bank changed: the server submitted nothing, or discarded the test.
+      if (res && res.discarded) return homeDiscarded(res.notices);
+      if (res && res.unfinished) return showReimported(run, res);
+      showSubmitted(run, res, timedOut);
+    })
+    .withFailureHandler(function (err) { failed('Could not submit: ' + errorText(err)); })
+    .submitMockTest(changes, seconds, timedOut);
+}
+
+// A manual submit that dropped or reset an item submitted nothing. The run is
+// rebuilt from the test the server sent, positions closed up, and the pause
+// screen shows the notice; the pill and border come from `pageReset`.
+function showReimported(run, res) {
+  var test = res.unfinished;
+  if (testRun === run) dropRun();
+  noteReimport(test, res);
+  homeData.mockTest = testSummary(test);
+  show(pauseScreen(test, res.notices || []));
+  window.scrollTo(0, 0);
+}
+
+// The test is graded: the home data takes the moved state rows and the new
+// counts, and the results header opens. A zero-seconds submit that met a
+// re-import shows its notice above the header.
+function showSubmitted(run, res, timedOut) {
+  if (testRun === run) dropRun();
+  if (homeData) {
+    homeData.mockTest = null;
+    Object.keys(res.states || {}).forEach(function (id) { homeData.states[id] = res.states[id]; });
+    if (res.counts) homeData.counts = res.counts;
+  }
+  noteReimport(res.test, res);
+  openResults(res.test_id, timedOut ? TIMED_OUT_TEXT : SUBMITTED_TEXT, res.notices);
+}
+
+function timerBar(run) {
+  var s = runSeconds(run);
+  run.timerEl = el('span', { 'class': 'timer' + (s < LOW_SECONDS ? ' low' : ''), text: clockText(s) });
+  var pause = el('button', { type: 'button', 'class': 'pausebtn', title: 'Pause hides the question', text: '❚❚ Pause' });
+  pause.addEventListener('click', function () { pauseTest(run); });
+  return el('div', { 'class': 'tbarD' }, [el('span', { 'class': 'muted', text: 'Time left' }), run.timerEl, el('span', { 'class': 'grow' }), pause]);
+}
+
+function testCard(run, item) {
+  var q = questionById(item.question_id);
+  var bar = timerBar(run);
+  if (!q) return el('div', { 'class': 'card error' }, [bar, el('p', { text: 'Question ' + item.question_id + ' is not in the bank.' })]);
+  var need = needOf(item);
+  var nodes = [bar, el('div', { 'class': 'qnum', text: 'Question ' + (run.pos + 1) + ' of ' + run.items.length })];
+
+  // Pills: the Subdomain only, and Flagged. Uncertain answer and SR wait for submit.
+  var pills = [subdomainPill(q)];
+  if (item.flagged) pills.push(el('span', { 'class': 'pill flag', text: '⚑ Flagged' }));
+  if (item.reset) pills.push(el('span', { 'class': 'pill warn', text: 'Edited in re-import: answer cleared' }));
+  nodes.push(el('div', {}, pills));
+  nodes.push(el('div', { 'class': 'stem' }, [richText(q.question)]));
+
+  var hint = el('div', { 'class': 'selhint' }, [document.createTextNode('Select ' + need + '.')]);
+  if (need > 1) {
+    hint.appendChild(document.createTextNode(' '));
+    hint.appendChild(el('b', { text: item.picks.length + ' of ' + need + ' picked.' }));
+  }
+  if (run.hint) hint.appendChild(el('span', { 'class': 'capwarn', role: 'status', text: ' ' + run.hint }));
+  if (item.picks.length) {
+    var clear = el('a', { href: '#', text: 'Clear' });
+    clear.addEventListener('click', function (e) { e.preventDefault(); clearPicks(run, item); });
+    hint.appendChild(document.createTextNode(' '));
+    hint.appendChild(clear);
+  }
+  nodes.push(hint);
+
+  // Choices in the item's choice_order, labelled A to F by display position.
+  for (var k = 0; k < item.order.length; k++) nodes.push(choiceRow(run, item, q, k, need));
+
+  nodes.push(actionsGrid([flagButton(run, item), bookmarkButton(item.question_id), noteButton(item.question_id), reportButton(item.question_id)]));
+  if (run.panel && run.panel.kind === 'report') nodes.push(reportPanel(item.question_id));
+  if (run.error) nodes.push(el('p', { 'class': 'err', text: run.error }));
+  nodes.push(prevNext(run));
+  return el('div', { 'class': 'card' }, nodes);
+}
+
+function choiceRow(run, item, q, k, need) {
+  var letter = LETTERS[k];
+  var stored = item.order.charAt(k);
+  var on = item.picks.indexOf(letter) >= 0;
+  var input = el('input', { type: need > 1 ? 'checkbox' : 'radio', name: 'pick', value: letter });
+  input.checked = on;
+  input.addEventListener('change', function () { pickAt(run, item, letter); });
+  return choiceLabel(input, letter, q['choice_' + stored.toLowerCase()], 'choice' + (on ? ' pick' : ''), '');
+}
+
+function flagButton(run, item) {
+  var b = el('button', { type: 'button', 'class': item.flagged ? 'flagon' : '', 'aria-pressed': String(item.flagged), text: item.flagged ? '⚑ Flagged' : '⚑ Flag' });
+  b.addEventListener('click', function () { toggleFlag(run, item); });
+  return b;
+}
+
+// The last question shows "Review & submit", which opens the submit confirm.
+function prevNext(run) {
+  var prev = el('button', { type: 'button', text: '◀ Previous' });
+  prev.disabled = run.pos === 0;
+  prev.addEventListener('click', function () { goTo(run, run.pos - 1); });
+  var last = run.pos === run.items.length - 1;
+  var next = el('button', { type: 'button', text: last ? 'Review & submit' : 'Next ▶' });
+  next.addEventListener('click', function () {
+    if (last) openConfirm(run);
+    else goTo(run, run.pos + 1);
+  });
+  return el('div', { 'class': 'prevnext' }, [prev, next]);
+}
+
+function navCell(run, item, i) {
+  var state = itemState(item);
+  var cls = 'nc' + (state === 'ans' ? ' ans' : state === 'part' ? ' part' : '') + (item.flagged ? ' flag' : '') + (item.reset ? ' reset' : '') + (i === run.pos ? ' cur' : '');
+  var label = state === 'ans' ? 'answered' : state === 'part' ? 'part answered' : 'unanswered';
+  var b = el('button', { type: 'button', 'class': cls, title: 'Q' + (i + 1) + ': ' + label + (item.flagged ? ', Flagged' : '') + (item.reset ? ', reset by re-import' : ''), text: String(i + 1) });
+  b.addEventListener('click', function () { goTo(run, i); });
+  return b;
+}
+
+function legendRow(run) {
+  var swatch = function (cls, style) { return el('i', { 'class': cls || '', style: style || '' }); };
+  var entries = [
+    el('span', {}, [swatch('ans'), document.createTextNode('answered')]),
+    el('span', {}, [swatch(), document.createTextNode('unanswered')]),
+    el('span', {}, [swatch('part'), document.createTextNode('part answered')]),
+    el('span', { text: '⚑ Flagged' }),
+  ];
+  if (run.items.some(function (i) { return i.reset; })) {
+    entries.push(el('span', {}, [swatch('', 'border:1px dashed var(--a)'), document.createTextNode('reset by re-import')]));
+  }
+  return el('div', { 'class': 'legend' }, entries);
+}
+
+function countsLine(run) {
+  var c = runCounts(run);
+  return el('div', { 'class': 'counts' }, [
+    el('span', {}, [el('b', { text: String(c.ans) }), document.createTextNode(' answered')]),
+    el('span', {}, [el('b', { text: String(c.none + c.part) }), document.createTextNode(' unanswered')]),
+    el('span', { 'class': 'flagcount' }, [el('b', { text: String(c.flag) }), document.createTextNode(' ⚑ Flagged')]),
+  ]);
+}
+
+function navigatorCard(run) {
+  var submit = el('button', { type: 'button', 'class': 'submitbtn', text: 'Submit test' });
+  submit.addEventListener('click', function () { openConfirm(run); });
+  return el('div', { 'class': 'card' }, [
+    el('div', { 'class': 'navgrid' }, run.items.map(function (item, i) { return navCell(run, item, i); })),
+    legendRow(run),
+    el('div', { 'class': 'navfoot' }, [countsLine(run), el('span', { 'class': 'grow' }), submit]),
+  ]);
+}
+</script>

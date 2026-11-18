@@ -1,0 +1,21 @@
+# alias: opus | sonnet | haiku | fable.  effort: low | medium | high | xhigh | max
+defaults:
+  batch_size: 5
+  max_parallel: 10          # values above 20 are clamped to 20
+
+tasks:
+  llm_scraping:        {alias: sonnet, effort: medium}   # one page per Batch, batch_size unused
+  subdomain_tagging:   {alias: sonnet, effort: low, batch_size: 20}
+  answer_filling:      {alias: opus,   effort: high}
+  explanation_writing: {alias: opus,   effort: medium}
+  augmentation:        {alias: opus,   effort: high}
+  report_recheck:      {alias: opus,   effort: high}
+  study_guide_chapter: {alias: sonnet, effort: medium}
+
+augment:
+  target_total: 400
+  min_per_subdomain: 15
+  max_created_per_run: 100
+
+study_guide:
+  max_questions: 80

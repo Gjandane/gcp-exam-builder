@@ -1,0 +1,2 @@
+# Golden files are compared byte for byte: CRLF row ends, LF inside cells.
+.claude/skills/exam-bank/scripts/tests/fixtures/** -text

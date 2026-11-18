@@ -1,0 +1,51 @@
+<script>
+// The Copy prompt builder: one pure function, no DOM and no server call.
+// The Node test strips this script tag, evaluates the body and calls it.
+
+var PROMPT_LEVELS = {
+  Beginner: 'I am new to Google Cloud ML. Define each service you mention in one sentence and use plain words.',
+  Intermediate: 'I know the core Google Cloud ML services. Skip definitions. Focus on why each choice fits or fails.',
+  Expert: 'Be brief. Focus on edge cases, trade-offs and limits that decide between the close choices.',
+};
+
+// question: a bank row. user: {picked: [letters], result: 'correct'|'wrong'|'skipped'}.
+function buildPrompt(question, level, examName, user) {
+  var letters = ['A', 'B', 'C', 'D', 'E', 'F'];
+  var filled = letters.filter(function (l) { return String(question['choice_' + l.toLowerCase()]).trim() !== ''; });
+  var choices = filled.map(function (l) { return l + ') ' + question['choice_' + l.toLowerCase()]; });
+  var explanations = filled.filter(function (l) { return String(question['explanation_' + l.toLowerCase()]).trim() !== ''; })
+    .map(function (l) { return l + ') ' + question['explanation_' + l.toLowerCase()]; });
+  var stated = String(question.answer).split(',').map(function (s) { return s.trim(); }).filter(Boolean).sort().join(', ');
+  var mine = user.result === 'skipped' || !user.picked.length
+    ? 'My answer: none (skipped)'
+    : 'My answer: ' + user.picked.slice().sort().join(', ') + ' (' + user.result + ')';
+  var lines = [
+    'I am studying for the ' + examName + ' exam. Explain this practice question.',
+    '',
+    'Level: ' + level + '. ' + PROMPT_LEVELS[level],
+    '',
+    'Subdomain ' + question.subdomain + ': ' + question.subdomain_title,
+    '',
+    'Question:',
+    question.question,
+    '',
+    'Choices:',
+  ].concat(choices, [
+    '',
+    'Stated correct answer: ' + stated,
+    mine,
+  ]);
+  if (String(question.uncertain).toUpperCase() === 'TRUE') lines.push('Sources disagree on this answer. Check it first.');
+  if (explanations.length) lines = lines.concat(['', 'Explanations I already read:'], explanations);
+  return lines.concat([
+    '',
+    'Do this:',
+    '1. Do not repeat the explanations above. Go deeper.',
+    '2. For each choice, say why it is right or wrong in this scenario.',
+    '3. Name the one fact that decides the question.',
+    '4. If you think the stated answer is wrong, say so and give your reason.',
+    '5. For each key fact, give the cloud.google.com page title. Give a URL only when you are sure the page exists.',
+    '6. End with one rule of thumb I can reuse on similar questions.',
+  ]).join('\n');
+}
+</script>

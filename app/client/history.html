@@ -1,0 +1,127 @@
+<script>
+// The History screen (spec 0002, History screen): a score-over-time chart and
+// a table of every submitted Mock Test, newest first. Uses el, show, screens,
+// homeData, showMessage, errorText and clockText from the other client files.
+// A row or a chart point opens that test's results through openResults, which
+// the results screen defines; until it does, the header from resultsHeader.
+
+var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// "2026-11-12" -> "Nov 12".
+function shortDate(day) {
+  var m = /^\d{4}-(\d{2})-(\d{2})$/.exec(day);
+  return m ? MONTHS[+m[1] - 1] + ' ' + (+m[2]) : day;
+}
+
+function timeUsedText(test) {
+  return clockText(Math.max(0, test.minutes_allowed * 60 - test.seconds_left));
+}
+
+function openHistory() {
+  show([el('div', { 'class': 'card' }, [el('p', { 'class': 'muted', text: 'Loading…' })])]);
+  google.script.run
+    .withSuccessHandler(function (res) { show(historyScreen(res.tests)); })
+    .withFailureHandler(function (err) { showMessage('Could not open the history: ' + errorText(err)); })
+    .getHistory();
+}
+
+function openHistoryResults(test) {
+  if (typeof openResults === 'function') openResults(test.test_id);
+  else show(resultsHeader(test, false));
+}
+
+function svgEl(tag, attrs, children) {
+  var node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  Object.keys(attrs || {}).forEach(function (k) {
+    if (k === 'text') node.textContent = attrs[k];
+    else node.setAttribute(k, attrs[k]);
+  });
+  (children || []).forEach(function (c) { node.appendChild(c); });
+  return node;
+}
+
+// `tests` is newest first. `onHover(testId)` is called with a test id on
+// enter and null on leave. Points sit in test order, oldest left, evenly spaced.
+function historyChart(tests, onHover) {
+  var ordered = tests.slice().reverse();
+  var W = 720, H = 220, left = 40, right = 20, top = 22, bottom = 26, inset = 24;
+  function x(i) {
+    return ordered.length === 1 ? left + (W - left - right) / 2 : left + inset + (W - left - right - 2 * inset) * i / (ordered.length - 1);
+  }
+  function y(pct) { return top + (H - top - bottom) * (1 - pct / 100); }
+  var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': 'Score over time' });
+  [0, 25, 50, 75, 100].forEach(function (p) {
+    svg.appendChild(svgEl('line', { x1: left, x2: W - right, y1: y(p), y2: y(p), stroke: '#eef0f3' }));
+    svg.appendChild(svgEl('text', { x: left - 6, y: y(p) + 4, 'font-size': 11, 'text-anchor': 'end', fill: '#9ca3af', text: p + '%' }));
+  });
+  if (ordered.length > 1) {
+    svg.appendChild(svgEl('polyline', {
+      fill: 'none', stroke: '#3b82f6', 'stroke-width': 2,
+      points: ordered.map(function (t, i) { return x(i) + ',' + y(parseFloat(t.score_pct) || 0); }).join(' '),
+    }));
+  }
+  ordered.forEach(function (t, i) {
+    var timedOut = t.seconds_left === 0;
+    var cx = x(i), cy = y(parseFloat(t.score_pct) || 0);
+    var title = t.submitted_on + ' · ' + t.score_pct + '% · ' + t.correct_count + '/' + t.question_count + (timedOut ? ' · timed out' : '');
+    var g = svgEl('g', { 'class': 'pt', tabindex: 0, role: 'link', 'aria-label': title }, [
+      svgEl('title', { text: title }),
+      svgEl('circle', { cx: cx, cy: cy, r: 9, fill: 'transparent' }),
+      svgEl('circle', { cx: cx, cy: cy, r: 4.5, fill: timedOut ? '#fff' : '#3b82f6', stroke: timedOut ? '#b7791f' : '#3b82f6', 'stroke-width': 2 }),
+      svgEl('text', { x: cx, y: cy - 10, 'font-size': 11, 'text-anchor': 'middle', fill: '#374151', text: t.score_pct + '%' }),
+      svgEl('text', { x: cx, y: H - 8, 'font-size': 11, 'text-anchor': 'middle', fill: '#9ca3af', text: shortDate(t.submitted_on) }),
+    ]);
+    g.addEventListener('click', function () { openHistoryResults(t); });
+    g.addEventListener('keydown', function (e) { if (e.key === 'Enter') openHistoryResults(t); });
+    g.addEventListener('mouseenter', function () { onHover(t.test_id); });
+    g.addEventListener('mouseleave', function () { onHover(null); });
+    svg.appendChild(g);
+  });
+  return el('div', { 'class': 'chart' }, [svg]);
+}
+
+function homeLink() {
+  var link = el('a', { href: '#', text: 'Home' });
+  link.addEventListener('click', function (e) {
+    e.preventDefault();
+    show(screens.home(homeData));
+  });
+  return link;
+}
+
+function historyScreen(tests) {
+  var nodes = [el('p', { 'class': 'top' }, [homeLink()]), el('h1', { text: 'Mock Test history' })];
+  if (!tests.length) {
+    nodes.push(el('div', { 'class': 'card empty' }, [
+      el('b', { text: 'No Mock Tests yet.' }),
+      el('p', { 'class': 'muted', text: 'Submitted tests show here with their score.' }),
+      el('p', {}, [homeLink()]),
+    ]));
+    return nodes;
+  }
+  var rows = {};
+  function highlight(id) {
+    Object.keys(rows).forEach(function (k) { rows[k].className = k === id ? 'r hl' : 'r'; });
+  }
+  var head = el('tr', {}, ['Date', 'Score', 'Correct', 'Time used', ''].map(function (h) { return el('th', { text: h }); }));
+  var body = tests.map(function (t) {
+    var tr = el('tr', { 'class': 'r' }, [
+      el('td', { text: t.submitted_on }),
+      el('td', {}, [el('b', { text: t.score_pct + '%' })]),
+      el('td', { text: t.correct_count + ' / ' + t.question_count }),
+      el('td', { text: timeUsedText(t) }),
+      el('td', {}, t.seconds_left === 0 ? [el('span', { 'class': 'pill to', text: '⏱ timed out' })] : []),
+    ]);
+    tr.addEventListener('click', function () { openHistoryResults(t); });
+    rows[t.test_id] = tr;
+    return tr;
+  });
+  nodes.push(el('div', { 'class': 'card' }, [
+    el('h2', { text: 'Score over time' }),
+    historyChart(tests, highlight),
+    el('div', { 'class': 'muted small', text: '● score · ○ timed out · click a point or a row to open its results' }),
+  ]));
+  nodes.push(el('div', { 'class': 'card' }, [el('table', { 'class': 'hist' }, [head].concat(body))]));
+  return nodes;
+}
+</script>

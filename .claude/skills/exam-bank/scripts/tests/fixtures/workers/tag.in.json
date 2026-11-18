@@ -1,0 +1,126 @@
+{
+  "batch_id": "tag-0001",
+  "step": "tag",
+  "sections": [
+    {
+      "number": 1,
+      "title": "Architecting low-code AI solutions",
+      "subdomains": [
+        {
+          "number": "1.1",
+          "title": "Developing ML models using BigQuery ML or AutoML on Gemini Enterprise Agent Platform"
+        },
+        {
+          "number": "1.2",
+          "title": "Building AI solutions using Google Cloud AI APIs or foundational models"
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "title": "Collaborating within and across teams to manage data and models",
+      "subdomains": [
+        {
+          "number": "2.1",
+          "title": "Exploring and preprocessing data for ML"
+        },
+        {
+          "number": "2.2",
+          "title": "Model prototyping using notebooks (e.g., Agent Platform Workbench and Colab Enterprise)"
+        },
+        {
+          "number": "2.3",
+          "title": "Tracking and running ML experiments"
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "title": "Scaling prototypes into ML models",
+      "subdomains": [
+        {
+          "number": "3.1",
+          "title": "Building models given the task considering cost, complexity, latency, and scalability"
+        },
+        {
+          "number": "3.2",
+          "title": "Training models"
+        },
+        {
+          "number": "3.3",
+          "title": "Choosing appropriate hardware for training"
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "title": "Serving and scaling models",
+      "subdomains": [
+        {
+          "number": "4.1",
+          "title": "Serving models"
+        },
+        {
+          "number": "4.2",
+          "title": "Scaling online model serving"
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "title": "Automating and orchestrating ML pipelines",
+      "subdomains": [
+        {
+          "number": "5.1",
+          "title": "Developing end-to-end ML pipelines",
+          "hint": "Pipeline orchestration, reusable components, and dependencies."
+        },
+        {
+          "number": "5.2",
+          "title": "Automating model retraining"
+        }
+      ]
+    },
+    {
+      "number": 6,
+      "title": "Monitoring AI solutions",
+      "subdomains": [
+        {
+          "number": "6.1",
+          "title": "Identifying risks to AI solutions"
+        },
+        {
+          "number": "6.2",
+          "title": "Monitoring, testing, and troubleshooting AI solutions"
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "q_3fa9c21b07de",
+      "question": "A team trains a model weekly. They need to run validation after preprocessing and start training only after validation passes. Which service should orchestrate these steps?",
+      "choices": [
+        {
+          "letter": "A",
+          "text": "Vertex AI Pipelines"
+        },
+        {
+          "letter": "B",
+          "text": "Cloud Monitoring"
+        },
+        {
+          "letter": "C",
+          "text": "BigQuery BI Engine"
+        },
+        {
+          "letter": "D",
+          "text": "Cloud Translation API"
+        }
+      ],
+      "source_labels": [
+        "Subdomain 5.2: Automating model retraining"
+      ]
+    }
+  ]
+}

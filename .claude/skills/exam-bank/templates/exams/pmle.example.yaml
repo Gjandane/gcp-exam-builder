@@ -1,0 +1,71 @@
+slug: pmle
+name: Google Cloud Professional Machine Learning Engineer
+guide_version: "2026-06-01"
+
+sections:
+  - number: 1
+    title: Architecting low-code AI solutions
+    weight: 13
+    subdomains:
+      - {number: "1.1", title: "Developing ML models using BigQuery ML or AutoML on Gemini Enterprise Agent Platform"}
+      - {number: "1.2", title: "Building AI solutions using Google Cloud AI APIs or foundational models"}
+  - number: 2
+    title: Collaborating within and across teams to manage data and models
+    weight: 16
+    subdomains:
+      - {number: "2.1", title: "Exploring and preprocessing data for ML"}
+      - {number: "2.2", title: "Model prototyping using notebooks (e.g., Agent Platform Workbench and Colab Enterprise)"}
+      - {number: "2.3", title: "Tracking and running ML experiments"}
+  - number: 3
+    title: Scaling prototypes into ML models
+    weight: 21
+    subdomains:
+      - {number: "3.1", title: "Building models given the task considering cost, complexity, latency, and scalability"}
+      - {number: "3.2", title: "Training models"}
+      - {number: "3.3", title: "Choosing appropriate hardware for training"}
+  - number: 4
+    title: Serving and scaling models
+    weight: 20
+    subdomains:
+      - {number: "4.1", title: "Serving models"}
+      - {number: "4.2", title: "Scaling online model serving"}
+  - number: 5
+    title: Automating and orchestrating ML pipelines
+    weight: 18
+    subdomains:
+      - {number: "5.1", title: "Developing end-to-end ML pipelines"}
+      - {number: "5.2", title: "Automating model retraining"}
+  - number: 6
+    title: Monitoring AI solutions
+    weight: 13
+    subdomains:
+      - {number: "6.1", title: "Identifying risks to AI solutions"}
+      - {number: "6.2", title: "Monitoring, testing, and troubleshooting AI solutions"}
+
+curated_sites:                 # each name has a scraper in scripts/scrapers/<name>.py
+  - name: examtopics
+    url: https://www.examtopics.com/exams/google/professional-machine-learning-engineer/view/
+    enabled: true
+    answers_trusted: true
+  - name: certsafari
+    url: https://www.certsafari.com/google/machine-learning-engineer-professional/practice-questions
+    enabled: true
+    answers_trusted: true
+
+llm_sources:                   # static pages only, read the site's ToS before enabling
+  - name: whizlabs
+    urls: ["https://www.whizlabs.com/blog/gcp-professional-machine-learning-engineer-questions/"]
+    enabled: true
+    answers_trusted: false
+  - name: theserverside
+    urls: ["https://www.theserverside.com/blog/Coffee-Talk-Java-News-Stories-and-Opinions/GCP-Professional-ML-Engineer-Certification-Exam-Dump-and-Braindump/"]
+    enabled: true
+    answers_trusted: false
+  - name: mockingowl
+    urls: ["https://mockingowl.pages.dev/exams/google/gcp-pmle/sample-questions/"]
+    enabled: true
+    answers_trusted: false
+  - name: open-exam-prep
+    urls: ["https://open-exam-prep.com/practice/gcp-machine-learning"]
+    enabled: true
+    answers_trusted: false

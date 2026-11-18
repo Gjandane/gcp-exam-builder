@@ -1,0 +1,17 @@
+{
+  "batch_id": "answers-0001",
+  "step": "answers",
+  "questions": [{
+    "id": "q_3fa9c21b07de",
+    "question": "Which Google Cloud service runs a managed Apache Beam pipeline?",
+    "choices": [{"letter": "A", "text": "Dataflow"}, {"letter": "B", "text": "Cloud Storage"}]
+  }],
+  "source_answers": {
+    "q_3fa9c21b07de": {
+      "stored": ["A"],
+      "sources": [{"name": "example", "answer": ["A"]}],
+      "explanations": {"B": {"text": "Incorrect. Cloud Storage stores objects.", "by": "user"}},
+      "explanation_blocks": []
+    }
+  }
+}

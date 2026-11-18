@@ -1,0 +1,24 @@
+{
+  "batch_id": "augment-0001",
+  "step": "augment",
+  "kind": "create",
+  "subdomain": {"number": "5.1", "title": "Developing end-to-end ML pipelines"},
+  "count": 2,
+  "examples": [
+    {
+      "id": "q_3333bbbb4444",
+      "question": "A team retrains a model weekly and wants each run tracked and repeatable. Which Google Cloud service should orchestrate the steps?",
+      "choices": [
+        {"letter": "A", "text": "Vertex AI Pipelines", "explanation": "Correct. Vertex AI Pipelines runs and tracks repeatable ML workflow steps."},
+        {"letter": "B", "text": "Cloud Storage", "explanation": "Incorrect. Cloud Storage stores objects and does not orchestrate steps."},
+        {"letter": "C", "text": "Cloud DNS", "explanation": "Incorrect. Cloud DNS resolves names."}
+      ],
+      "answer": ["A"]
+    }
+  ],
+  "existing_stems": [
+    "A team retrains a model weekly and wants each run tracked and repeatable. Which Google Cloud service should orchestrate the steps?"
+  ],
+  "choice_count_mix": {"3": 1, "4": 6, "5": 2},
+  "multi_select_share": 0.2
+}

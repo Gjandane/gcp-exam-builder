@@ -1,0 +1,44 @@
+{
+  "exam": "pmle",
+  "subdomain": "2.1",
+  "title": "Exploring and preprocessing data for ML",
+  "guide_version": "2026-06-01",
+  "active_ids": [
+    "q_000000000001"
+  ],
+  "questions": [
+    {
+      "id": "q_000000000001",
+      "exam": "pmle",
+      "status": "active",
+      "subdomain": "2.1",
+      "question": "Which preparation method prevents a feature mismatch?",
+      "choices": [
+        {
+          "letter": "A",
+          "text": "Share transformation logic.",
+          "explanation": "Correct. Both environments compute matching features.",
+          "explanation_by": "llm"
+        },
+        {
+          "letter": "B",
+          "text": "Change the model schedule.",
+          "explanation": "Incorrect. Scheduling does not alter feature values.",
+          "explanation_by": "llm"
+        }
+      ],
+      "answer": [
+        "A"
+      ],
+      "lineage": "given",
+      "uncertain": false,
+      "answer_confidence": "high",
+      "subdomain_confidence": "high",
+      "marked": false,
+      "updated_at": "2026-11-17T08:00:00Z"
+    }
+  ],
+  "chapter_path": "exam-bank/pmle/study-guide/2.1-exploring-and-preprocessing-data-for-ml.md",
+  "model": "sonnet",
+  "written_at": "2026-11-18T00:00:00Z"
+}
